@@ -291,6 +291,65 @@ class MeshCoreBot:
             # Use default credentials
             return boto3.client('bedrock-runtime', config=config)
 
+    async def _get_advert_path(self, pubkey_hex: str) -> Optional[List[int]]:
+        """
+        Query the MeshCore device for the advert path to a specific node.
+
+        Uses CMD_GET_ADVERT_PATH (0x2A/42) protocol command.
+
+        Args:
+            pubkey_hex: Hex string of the node's public key (at least 14 chars for 7 bytes)
+
+        Returns:
+            List of path hop bytes, or None if not found
+        """
+        try:
+            if not self.meshcore:
+                logger.warning("MeshCore not connected")
+                return None
+
+            # CMD_GET_ADVERT_PATH = 0x2A (42)
+            # Format: [CMD, reserved, pubkey[7 bytes]]
+
+            # Convert pubkey hex to bytes (need at least 7 bytes / 14 hex chars)
+            if len(pubkey_hex) < 14:
+                logger.warning(f"Public key too short: {pubkey_hex}")
+                return None
+
+            pubkey_bytes = bytes.fromhex(pubkey_hex[:14])  # First 7 bytes
+
+            # Build command frame
+            cmd_frame = bytearray([0x2A, 0x00])  # CMD_GET_ADVERT_PATH, reserved byte
+            cmd_frame.extend(pubkey_bytes)
+
+            logger.debug(f"Querying advert path for pubkey {pubkey_hex[:14]}")
+
+            # Send command and wait for RESP_CODE_ADVERT_PATH (22 = 0x16) or ERROR
+            response = await self.meshcore.commands.send(
+                bytes(cmd_frame),
+                expected_events=[EventType.ERROR],  # Will handle raw response
+                timeout=2.0
+            )
+
+            # Parse response
+            if hasattr(response, 'payload') and response.payload:
+                payload = response.payload
+                logger.debug(f"Got advert path response: {payload}")
+
+                # Response format: [RESP_CODE(0x16), timestamp(4), path_len(1), path[path_len]]
+                # The meshcore library may parse this differently, check what we get
+                if 'path' in payload and 'path_len' in payload:
+                    path_len = payload['path_len']
+                    path_bytes = payload['path']
+                    if isinstance(path_bytes, (list, bytes)):
+                        return list(path_bytes[:path_len])
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Failed to get advert path: {e}")
+            return None
+
     def _build_system_prompt(self) -> str:
         """Build the system prompt with MeshCore expertise."""
         return """You are Jeff, a technical MeshCore mesh networking expert. You run as a bot on the NSW MeshCore network.
@@ -673,16 +732,29 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 # Format: ack $(NAME) | $(Hops) | SNR: X dB | RSSI: X dBm | Received at: $(TIME)
                 ack_parts = [f"ack {sender_name}"]
 
-                # Add path/hops - MeshCore Python library doesn't expose path bytes,
-                # so show either Direct or hop count
+                # Add path/hops - Try to get actual path via CMD_GET_ADVERT_PATH
                 path_len = message.get('path_len', 0)
+                sender_pubkey = message.get('sender_pubkey', '')
 
-                if path_len == 0:
+                # Try to query advert path if we have the sender's public key
+                path_hops = None
+                if sender_pubkey and len(sender_pubkey) >= 14:
+                    try:
+                        path_hops = await self._get_advert_path(sender_pubkey)
+                        logger.info(f"🛤️  Got advert path for {sender_pubkey[:14]}: {path_hops}")
+                    except Exception as e:
+                        logger.debug(f"Failed to get advert path: {e}")
+
+                if path_hops:
+                    # Show actual path as hex bytes
+                    path_str = ','.join([f"{hop:02x}" for hop in path_hops])
+                    ack_parts.append(path_str)
+                elif path_len == 0:
                     ack_parts.append("Direct")
                 elif path_len == 0xFF or path_len == 255:  # Direct route (not flooded)
                     ack_parts.append("Direct")
                 else:
-                    # Show hop count for flooded/learned routes
+                    # Fallback: show hop count for flooded/learned routes
                     ack_parts.append(f"{path_len}hop" if path_len == 1 else f"{path_len}hops")
 
                 # Add SNR
@@ -972,7 +1044,8 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                     'RSSI': rssi,
                     'path': payload.get('path'),
                     'path_len': payload.get('path_len'),
-                    'channel_idx': payload.get('channel_idx')
+                    'channel_idx': payload.get('channel_idx'),
+                    'sender_pubkey': payload.get('pubkey', payload.get('sender_pubkey', payload.get('from_pubkey', '')))
                 }
             }
 
