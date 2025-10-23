@@ -305,8 +305,10 @@ Behavior Guidelines:
 - Skip small talk - get straight to technical info
 - Answer ONLY what was asked, nothing more
 - When greeted (hello/hey), respond briefly then STOP (e.g. "Muh nameh Jeff.")
-- For node/repeater questions: return data directly from API lookups
+- For node/repeater questions: return ALL available data (name, type, freq, SF, location, last heard, etc)
+- NEVER ask "Want more details?" - provide complete information in first response
 - For test/t messages: return ack with metadata only
+- NO filler words like "absolutely", "definitely", "great question"
 
 MeshCore Key Facts:
 - MeshCore is a lightweight C++ library for creating decentralized LoRa mesh networks
@@ -435,7 +437,7 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 if not best_match:
                     return f"No match for '{node_name}'"
 
-                # Extract node details - keep it SHORT for LoRa bandwidth
+                # Extract ALL available node details
                 name = best_match.get('adv_name', 'Unknown')
                 node_type = best_match.get('type', 1)
                 typ = "RPT" if node_type == 2 else "Node"
@@ -446,7 +448,7 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 lat = best_match.get('adv_lat')
                 lon = best_match.get('adv_lon')
                 if lat and lon:
-                    details.append(f"{lat:.2f},{lon:.2f}")
+                    details.append(f"{lat:.4f},{lon:.4f}")
 
                 # Radio params
                 params = best_match.get('params', {})
@@ -460,6 +462,16 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                         details.append(f"SF{sf}")
                     if bw:
                         details.append(f"BW{bw}")
+
+                # Last heard (if available)
+                last_heard = best_match.get('last_heard')
+                if last_heard:
+                    details.append(f"heard:{last_heard}")
+
+                # Owner/callsign if available
+                owner = best_match.get('owner')
+                if owner:
+                    details.append(f"owner:{owner}")
 
                 return "|".join(details)
             else:
