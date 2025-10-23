@@ -673,21 +673,17 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 # Format: ack $(NAME) | $(Hops) | SNR: X dB | RSSI: X dBm | Received at: $(TIME)
                 ack_parts = [f"ack {sender_name}"]
 
-                # Add path/hops - use the actual path if available, otherwise show Direct or path length
-                path = message.get('path')
+                # Add path/hops - MeshCore Python library doesn't expose path bytes,
+                # so show either Direct or hop count
                 path_len = message.get('path_len', 0)
 
-                logger.info(f"🛤️  PATH DEBUG: path={path}, path_len={path_len}, type={type(path)}")
-
-                if path and isinstance(path, (list, tuple)) and path_len > 0:
-                    # Format path as comma-separated hex bytes (only up to path_len)
-                    path_str = ','.join([f"{hop:02x}" for hop in path[:path_len]])
-                    ack_parts.append(path_str)
-                elif path_len > 0:
-                    # Just show the path length as a number if we don't have the hop IDs
-                    ack_parts.append(str(path_len))
-                else:
+                if path_len == 0:
                     ack_parts.append("Direct")
+                elif path_len == 0xFF or path_len == 255:  # Direct route (not flooded)
+                    ack_parts.append("Direct")
+                else:
+                    # Show hop count for flooded/learned routes
+                    ack_parts.append(f"{path_len}hop" if path_len == 1 else f"{path_len}hops")
 
                 # Add SNR
                 snr = message.get('SNR', 'N/A')
@@ -1060,14 +1056,23 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 try:
                     if hasattr(event, 'payload'):
                         payload = event.payload
-                        # Log all key-value pairs individually
-                        logger.info(f"📡 RX_LOG_DATA - {len(payload)} keys:")
-                        for key, value in payload.items():
-                            logger.info(f"  {key}: {value}")
 
-                        self.last_rx_snr = payload.get('snr', payload.get('SNR'))
-                        self.last_rx_rssi = payload.get('rssi', payload.get('RSSI'))
-                        logger.info(f"📡 Captured: SNR={self.last_rx_snr} dB, RSSI={self.last_rx_rssi} dBm")
+                        # Extract SNR and RSSI
+                        snr = payload.get('snr', payload.get('SNR'))
+                        rssi = payload.get('rssi', payload.get('RSSI'))
+
+                        # Check if this is encrypted/undecryptable data
+                        payload_type = payload.get('type', '')
+                        if payload_type not in ['CHAN', 'DM']:  # Not a readable channel or direct message
+                            # Just log a summary for encrypted packets
+                            logger.info(f"📡 Encrypted packet received - SNR={snr} dB, RSSI={rssi} dBm")
+                        else:
+                            # For decrypted messages, log normally
+                            logger.debug(f"📡 RX signal - SNR={snr} dB, RSSI={rssi} dBm")
+
+                        # Store for test/ping commands
+                        self.last_rx_snr = snr
+                        self.last_rx_rssi = rssi
                 except Exception as e:
                     logger.error(f"Error in on_rx_log_data: {e}", exc_info=True)
 
