@@ -677,15 +677,10 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 path = message.get('path')
                 path_len = message.get('path_len', 0)
 
-                if path:
-                    # If we have the actual path (list of hop IDs), format them as hex
-                    if isinstance(path, list):
-                        path_str = ','.join([format(hop, '02x') for hop in path])
-                        ack_parts.append(path_str)
-                    elif isinstance(path, str):
-                        ack_parts.append(path)
-                    else:
-                        ack_parts.append(str(path))
+                if path and isinstance(path, (list, tuple)) and path_len > 0:
+                    # Format path as comma-separated hex bytes (only up to path_len)
+                    path_str = ','.join([f"{hop:02x}" for hop in path[:path_len]])
+                    ack_parts.append(path_str)
                 elif path_len > 0:
                     # Just show the path length as a number if we don't have the hop IDs
                     ack_parts.append(str(path_len))
