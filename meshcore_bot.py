@@ -740,15 +740,45 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
 
             # Handle "path" command - respond with path details
             if 'path' in words:
-                # For now, return a simplified path response
-                # TODO: Get actual hop details from MeshCore API
+                # Return path with actual node names from public key prefixes
                 now = datetime.now().strftime("%H:%M:%S")
-
+                path_data = message.get('path')
                 path_len = message.get('path_len', 0)
-                if path_len > 0:
-                    return f"Path: {path_len} hops | SNR: {message.get('SNR', 'N/A')} dB | {now}"
+
+                if path_len > 0 and path_data:
+                    # Convert path bytes to hex prefixes and look up node names
+                    path_parts = []
+                    try:
+                        # Path is a list of bytes representing public key prefixes
+                        if isinstance(path_data, (list, tuple)):
+                            for byte_val in path_data[:path_len]:
+                                # Convert to 2-char hex prefix
+                                hex_prefix = f"{byte_val:02x}"
+
+                                # Look up node by public key prefix
+                                sydney_nodes = self.api.get_sydney_nodes()
+                                node = self._find_best_node_match(sydney_nodes, hex_prefix)
+
+                                if not node:
+                                    # Try NSW if not in Sydney
+                                    nsw_nodes = self.api.get_nsw_nodes()
+                                    node = self._find_best_node_match(nsw_nodes, hex_prefix)
+
+                                if node:
+                                    node_name = node.get('adv_name', f'Node {hex_prefix}')
+                                    path_parts.append(f"{hex_prefix.upper()}: {node_name}")
+                                else:
+                                    path_parts.append(f"{hex_prefix.upper()}: Unknown")
+
+                        if path_parts:
+                            return "\n".join(path_parts)
+                        else:
+                            return f"Path: {path_len} hops | SNR: {message.get('SNR', 'N/A')} dB | {now}"
+                    except Exception as e:
+                        logger.error(f"Error parsing path: {e}")
+                        return f"Path: {path_len} hops | SNR: {message.get('SNR', 'N/A')} dB | {now}"
                 else:
-                    return f"Direct connection | SNR: {message.get('SNR', 'N/A')} dB | {now}"
+                    return f"Direct | SNR: {message.get('SNR', 'N/A')} dB | {now}"
 
             # Build context with message metadata for Claude to use
             context_parts = []
