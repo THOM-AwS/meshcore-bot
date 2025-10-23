@@ -736,19 +736,25 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 path_len = message.get('path_len', 0)
                 sender_pubkey = message.get('sender_pubkey', '')
 
-                # If no pubkey in payload (channel messages), try to get from contacts
+                # If no pubkey in payload (channel messages), try to get from MeshCore API
                 if not sender_pubkey or len(sender_pubkey) < 14:
                     try:
-                        if self.meshcore:
-                            # Look up sender in contacts by name
-                            contact = self.meshcore.get_contact_by_name(sender_name)
-                            if contact and 'public_key' in contact:
-                                sender_pubkey = contact['public_key']
-                                logger.info(f"🔑 Found pubkey for {sender_name} in contacts: {sender_pubkey[:14]}...")
-                            else:
-                                logger.info(f"🔑 No contact found for {sender_name}")
+                        # Look up sender in MeshCore API by node name
+                        sydney_nodes = self.api.get_sydney_nodes()
+                        node = self._find_best_node_match(sydney_nodes, sender_name)
+
+                        if not node:
+                            # Try NSW nodes if not in Sydney
+                            nsw_nodes = self.api.get_nsw_nodes()
+                            node = self._find_best_node_match(nsw_nodes, sender_name)
+
+                        if node and 'public_key' in node:
+                            sender_pubkey = node['public_key']
+                            logger.info(f"🔑 Found pubkey for {sender_name} via API: {sender_pubkey[:14]}...")
+                        else:
+                            logger.info(f"🔑 No node found for {sender_name} in API")
                     except Exception as e:
-                        logger.debug(f"Error looking up contact: {e}")
+                        logger.debug(f"Error looking up node in API: {e}")
 
                 # Try to query advert path if we have the sender's public key
                 path_hops = None
