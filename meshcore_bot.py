@@ -368,11 +368,11 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
 
     def _find_best_node_match(self, nodes: List[Dict], query: str) -> Optional[Dict]:
         """
-        Find best matching node using fuzzy search.
+        Find best matching node using fuzzy search or public key prefix.
 
         Args:
             nodes: List of node dictionaries
-            query: Search query (possibly incomplete or misspelled)
+            query: Search query (node name, partial name, or hex public key prefix)
 
         Returns:
             Best matching node or None
@@ -381,6 +381,19 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             return None
 
         query_lower = query.lower()
+
+        # Check if query is a hex number (2-4 digits) - likely a public key prefix
+        is_hex_query = len(query) >= 2 and len(query) <= 4 and all(c in '0123456789abcdef' for c in query_lower)
+
+        if is_hex_query:
+            # Search by public key prefix
+            for node in nodes:
+                pub_key = node.get('public_key', '')
+                if pub_key.startswith(query_lower):
+                    logger.info(f"Matched node by public key prefix {query}: {node.get('adv_name')}")
+                    return node
+
+        # Regular name-based search
         best_match = None
         best_score = 0.0
 
