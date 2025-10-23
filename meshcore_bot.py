@@ -736,14 +736,31 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 path_len = message.get('path_len', 0)
                 sender_pubkey = message.get('sender_pubkey', '')
 
+                # If no pubkey in payload (channel messages), try to get from contacts
+                if not sender_pubkey or len(sender_pubkey) < 14:
+                    try:
+                        if self.meshcore:
+                            # Look up sender in contacts by name
+                            contact = self.meshcore.get_contact_by_name(sender_name)
+                            if contact and 'public_key' in contact:
+                                sender_pubkey = contact['public_key']
+                                logger.info(f"🔑 Found pubkey for {sender_name} in contacts: {sender_pubkey[:14]}...")
+                            else:
+                                logger.info(f"🔑 No contact found for {sender_name}")
+                    except Exception as e:
+                        logger.debug(f"Error looking up contact: {e}")
+
                 # Try to query advert path if we have the sender's public key
                 path_hops = None
                 if sender_pubkey and len(sender_pubkey) >= 14:
                     try:
+                        logger.info(f"🛤️  Querying advert path for {sender_pubkey[:14]}...")
                         path_hops = await self._get_advert_path(sender_pubkey)
-                        logger.info(f"🛤️  Got advert path for {sender_pubkey[:14]}: {path_hops}")
+                        logger.info(f"🛤️  Got advert path: {path_hops}")
                     except Exception as e:
-                        logger.debug(f"Failed to get advert path: {e}")
+                        logger.warning(f"Failed to get advert path: {e}", exc_info=True)
+                else:
+                    logger.info(f"🛤️  Skipping advert path query - no pubkey available")
 
                 if path_hops:
                     # Show actual path as hex bytes
@@ -1034,6 +1051,10 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             snr = payload.get('SNR', payload.get('snr', self.last_rx_snr))
             rssi = payload.get('RSSI', payload.get('rssi', self.last_rx_rssi))
 
+            # Extract sender public key (if available)
+            sender_pubkey = payload.get('pubkey', payload.get('sender_pubkey', payload.get('from_pubkey', payload.get('pubkey_prefix', ''))))
+            logger.info(f"🔑 Sender pubkey from payload: {sender_pubkey}")
+
             message_dict = {
                 'message': {
                     'text': text,
@@ -1045,7 +1066,7 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                     'path': payload.get('path'),
                     'path_len': payload.get('path_len'),
                     'channel_idx': payload.get('channel_idx'),
-                    'sender_pubkey': payload.get('pubkey', payload.get('sender_pubkey', payload.get('from_pubkey', '')))
+                    'sender_pubkey': sender_pubkey
                 }
             }
 
