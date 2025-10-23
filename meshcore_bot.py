@@ -786,24 +786,32 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
 
             # If this is a node/repeater question, try to extract the node name and look it up
             if is_node_question:
-                # Try to extract node name from the question
-                # Look for patterns like "X repeater", "X rpt", "X node"
+                # Try to extract node name or number from the question
+                # Look for patterns like "X repeater", "X rpt", "X node", "node 33"
                 import re
-                # Match patterns like "Guildford West" or "Guildford-West" or single words before "rpt/repeater/node"
-                node_pattern = r'([A-Za-z0-9\s\-\_]+)\s*(?:rpt|repeater|node|RPT|Rpt)'
-                match = re.search(node_pattern, clean_message, re.IGNORECASE)
 
                 node_name = None
-                if match:
-                    node_name = match.group(1).strip()
+
+                # First check for "node/rpt X" pattern (e.g. "node 33", "rpt 15")
+                number_pattern = r'(?:node|rpt|repeater)\s+(\d+)'
+                number_match = re.search(number_pattern, clean_message, re.IGNORECASE)
+                if number_match:
+                    node_name = number_match.group(1).strip()
                 else:
-                    # Try to find capitalized words that might be node names
-                    # Skip common words
-                    common_words = {'the', 'who', 'owns', 'what', 'is', 'new', 'a', 'an'}
-                    words_in_msg = clean_message.split()
-                    potential_names = [w for w in words_in_msg if w not in common_words and len(w) > 2]
-                    if potential_names:
-                        node_name = ' '.join(potential_names[:3])  # Take up to 3 words
+                    # Match patterns like "Guildford West" or "Guildford-West" or single words before "rpt/repeater/node"
+                    node_pattern = r'([A-Za-z0-9\s\-\_]+)\s*(?:rpt|repeater|node|RPT|Rpt)'
+                    match = re.search(node_pattern, clean_message, re.IGNORECASE)
+
+                    if match:
+                        node_name = match.group(1).strip()
+                    else:
+                        # Try to find capitalized words or numbers that might be node names
+                        # Skip common words
+                        common_words = {'the', 'who', 'owns', 'what', 'is', 'new', 'a', 'an', 'hey', 'hi'}
+                        words_in_msg = clean_message.split()
+                        potential_names = [w for w in words_in_msg if w not in common_words and len(w) > 0]
+                        if potential_names:
+                            node_name = ' '.join(potential_names[:3])  # Take up to 3 words
 
                 if node_name:
                     # Look up the node
