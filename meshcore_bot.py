@@ -805,8 +805,9 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
 
                 node_name = None
 
-                # First check for "node/rpt X" pattern (e.g. "node 33", "rpt 15")
-                number_pattern = r'(?:node|rpt|repeater)\s+(\d+)'
+                # First check for "node/rpt X" pattern (e.g. "node 33", "what node is 47", "rpt 15")
+                # Allow optional words like "is", "number" between keyword and number
+                number_pattern = r'(?:node|rpt|repeater)\s+(?:is\s+|number\s+)?([0-9a-f]{2,4})'
                 number_match = re.search(number_pattern, clean_message, re.IGNORECASE)
                 if number_match:
                     node_name = number_match.group(1).strip()
