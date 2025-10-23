@@ -677,6 +677,8 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 path = message.get('path')
                 path_len = message.get('path_len', 0)
 
+                logger.info(f"🛤️  PATH DEBUG: path={path}, path_len={path_len}, type={type(path)}")
+
                 if path and isinstance(path, (list, tuple)) and path_len > 0:
                     # Format path as comma-separated hex bytes (only up to path_len)
                     path_str = ','.join([f"{hop:02x}" for hop in path[:path_len]])
