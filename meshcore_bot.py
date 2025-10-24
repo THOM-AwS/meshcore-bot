@@ -750,9 +750,9 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
 
                         if node and 'public_key' in node:
                             sender_pubkey = node['public_key']
-                            logger.info(f"🔑 Found pubkey for {sender_name} via API: {sender_pubkey[:14]}...")
+                            logger.info(f"🔑 Found {sender_name} pubkey via API: {sender_pubkey[:14]}...")
                         else:
-                            logger.info(f"🔑 No node found for {sender_name} in API")
+                            logger.debug(f"No API node found for {sender_name}")
                     except Exception as e:
                         logger.debug(f"Error looking up node in API: {e}")
 
@@ -760,13 +760,15 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 path_hops = None
                 if sender_pubkey and len(sender_pubkey) >= 14:
                     try:
-                        logger.info(f"🛤️  Querying advert path for {sender_pubkey[:14]}...")
                         path_hops = await self._get_advert_path(sender_pubkey)
-                        logger.info(f"🛤️  Got advert path: {path_hops}")
+                        if path_hops:
+                            logger.info(f"🛤️  Advert path: {','.join([f'{h:02x}' for h in path_hops])}")
+                        else:
+                            logger.debug(f"No cached advert path for {sender_name}")
                     except Exception as e:
-                        logger.warning(f"Failed to get advert path: {e}", exc_info=True)
+                        logger.debug(f"Path query failed: {e}")
                 else:
-                    logger.info(f"🛤️  Skipping advert path query - no pubkey available")
+                    logger.debug(f"No pubkey available for {sender_name}")
 
                 if path_hops:
                     # Show actual path as hex bytes
@@ -1040,12 +1042,6 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             if from_name == 'unknown' and ':' in text:
                 from_name = text.split(':', 1)[0].strip()
 
-            # Log all payload key-value pairs individually
-            logger.info(f"📬 CHANNEL_MSG_RECV - {len(payload)} keys:")
-            for key, value in payload.items():
-                logger.info(f"  {key}: {value}")
-
-            logger.info(f"Received from {from_name} on channel {channel}: {text}")
             # Log to chat file
             channel_names = {0: 'Public', 1: '#sydney', 2: '#nsw', 3: '#emergency',
                            4: '#nepean', 5: '#rolojnr', 6: '#test'}
@@ -1056,10 +1052,13 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             # Use last captured RSSI/SNR from RX_LOG_DATA if not in payload
             snr = payload.get('SNR', payload.get('snr', self.last_rx_snr))
             rssi = payload.get('RSSI', payload.get('rssi', self.last_rx_rssi))
+            path_len = payload.get('path_len', 0)
 
             # Extract sender public key (if available)
             sender_pubkey = payload.get('pubkey', payload.get('sender_pubkey', payload.get('from_pubkey', payload.get('pubkey_prefix', ''))))
-            logger.info(f"🔑 Sender pubkey from payload: {sender_pubkey}")
+
+            # Single concise log line for received messages
+            logger.debug(f"📬 {channel_name} | {from_name} | SNR:{snr} | RSSI:{rssi} | hops:{path_len}")
 
             message_dict = {
                 'message': {
