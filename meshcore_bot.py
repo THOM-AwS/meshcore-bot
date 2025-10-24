@@ -1160,16 +1160,7 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                         snr = payload.get('snr', payload.get('SNR'))
                         rssi = payload.get('rssi', payload.get('RSSI'))
 
-                        # Check if this is encrypted/undecryptable data
-                        payload_type = payload.get('type', '')
-                        if payload_type not in ['CHAN', 'DM']:  # Not a readable channel or direct message
-                            # Just log a summary for encrypted packets
-                            logger.info(f"📡 Encrypted packet received - SNR={snr} dB, RSSI={rssi} dBm")
-                        else:
-                            # For decrypted messages, log normally
-                            logger.debug(f"📡 RX signal - SNR={snr} dB, RSSI={rssi} dBm")
-
-                        # Store for test/ping commands
+                        # Store SNR/RSSI for test/ping commands (don't log every packet)
                         self.last_rx_snr = snr
                         self.last_rx_rssi = rssi
                 except Exception as e:
