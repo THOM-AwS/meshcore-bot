@@ -730,6 +730,7 @@ CRITICAL: You are on a LOW-BANDWIDTH LoRa network. MAXIMUM 100 characters per re
 - GOOD: "Done and done."
 - BAD: "*static crackle* Jeff here!"
 - GOOD: "Jeff here."
+- If someone asks what you can do or your capabilities: respond ONLY with "Say 'jeff help' for more info"
 Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS prioritize extreme brevity over completeness."""
 
     def _fuzzy_match_score(self, s1: str, s2: str) -> float:
@@ -1132,7 +1133,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
                     nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
 
-                    return f"Online|Sydney:{sydney_companions}c/{sydney_repeaters}r NSW:{nsw_companions}c/{nsw_repeaters}r (7d)"
+                    return f"Online | Sydney {sydney_companions} companions / {sydney_repeaters} repeaters | NSW {nsw_companions} companions / {nsw_repeaters} repeaters (7d)"
                 except Exception as e:
                     logger.error(f"Error getting node counts: {e}")
                     return "Online|nodes unavailable"

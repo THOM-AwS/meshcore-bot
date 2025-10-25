@@ -24,9 +24,10 @@ Jeff is running as a systemd daemon on the base server, actively monitoring the 
 |---------|----------|---------|
 | `test` or `t` | Ack with SNR, RSSI, path, timestamp | `ack Tom \| 2 \| SNR: 7.0 dB \| RSSI: -74 dBm \| Received at: 16:00:52` |
 | `ping` | Pong with signal data | `pong\|SNR:7dB\|RSSI:-74dBm\|16:00:52` |
-| `status` | Online status + Sydney node count | `Online\|nodes in sydney:45` |
-| `path` | Path details | `Path: 2 hops \| SNR: 7.0 dB \| 16:00:52` |
+| `status` | Online status + node counts | `Online \| Sydney 8 companions / 7 repeaters \| NSW 14 companions / 46 repeaters (7d)` |
+| `path` | Path details with suburbs | `a1:Bob Pyrmont -> 3f:Tower Chatswood -> YOU` |
 | `help` | Shows available commands | `Commands: test,ping,path,status,nodes,route,trace,help \| Or ask me about MeshCore` |
+| `@jeff what can you do?` | Capabilities question | `Say 'jeff help' for more info` |
 | `@jeff [question]` | Technical answer | Direct, concise responses about MeshCore |
 
 ### Node Lookup
@@ -58,18 +59,45 @@ Returns: `Bradbury Repeater ☢(RPT)\|-34.09,150.81\|915.8MHz\|SF11\|BW250`
 - **Channels**: #jeff (channel 7) only - Discord bridged
 - **Discord**: Webhook integration for message mirroring (see [DISCORD_SETUP.md](DISCORD_SETUP.md))
 
-## Files
+## Project Structure
 
-- **`meshcore_bot.py`** - Main bot application
-- **`test_jeff.py`** - Offline testing interface
-- **`requirements.txt`** - Python dependencies
-- **`.env.example`** - Configuration template
-- **`.env.local.example`** - Local secrets template (Discord webhook)
-- **`meshcore-bot.service`** - Systemd service file
-- **`SETUP.md`** - Detailed setup instructions
-- **`SERVICE_SETUP.md`** - Systemd service configuration
-- **`DISCORD_SETUP.md`** - Discord webhook integration guide
-- **`JEFF_FEATURES.md`** - Complete feature documentation
+```
+meshcore/
+├── main.py                    # Entry point with HTTP API
+├── meshcore_bot/              # Modular architecture
+│   ├── config/                # Configuration management
+│   │   └── settings.py
+│   ├── integrations/          # External services
+│   │   ├── api.py            # HTTP API server
+│   │   ├── discord_sync.py   # Discord bidirectional sync
+│   │   ├── llm_client.py     # AWS Bedrock Claude client
+│   │   └── meshcore_api.py   # MeshCore Map API client
+│   ├── messaging/             # Message handling
+│   │   ├── sender.py         # Unified message sender
+│   │   └── types.py          # Message types
+│   ├── commands/              # Command pattern
+│   │   ├── base.py           # Command registry
+│   │   ├── test_command.py   # Test/ack command
+│   │   ├── ping_command.py   # Ping/pong command
+│   │   ├── status_command.py # Network status
+│   │   ├── path_command.py   # Path display
+│   │   └── help_command.py   # Help command
+│   ├── features/              # Bot features
+│   │   ├── path_utils.py     # Routing path utilities
+│   │   └── scheduler.py      # Broadcast scheduler
+│   └── utils/                 # Utilities
+│       └── logging.py        # Logging setup
+├── jeff_say.sh                # Helper script for HTTP API
+├── requirements.txt           # Python dependencies
+├── meshcore-bot.service       # Systemd service
+└── docs/                      # Documentation
+    ├── API.md                 # HTTP API reference
+    ├── SETUP.md               # Setup guide
+    ├── SERVICE_SETUP.md       # Systemd configuration
+    ├── DISCORD_SETUP.md       # Discord integration
+    ├── JEFF_FEATURES.md       # Feature documentation
+    └── JEFF_CHANNEL_CONFIG.md # Channel configuration
+```
 
 ## Quick Start
 
@@ -93,16 +121,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Run bot
-python3 meshcore_bot.py
-```
-
-### Testing (Offline)
-```bash
-# Interactive mode
-python3 test_jeff.py
-
-# Automated test suite
-python3 test_jeff.py --test
+python3 main.py
 ```
 
 ## Managing Jeff (Production)
