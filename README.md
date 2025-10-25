@@ -11,11 +11,12 @@ Jeff is running as a systemd daemon on the base server, actively monitoring the 
 ## Features
 
 ### Smart Triggering
-- **Channel**: Jeff only responds on the **#jeff** channel (channel index 7)
+- **Channels**: Jeff responds on **#jeff** (channel 7) and **#test** (channel 6)
 - **Keywords**: Responds to `test`, `ping`, `path`, `status`, `nodes`, `help`, `route`, `trace`
 - **Node questions**: Automatically detects queries about specific nodes/repeaters
 - **Follow-ups**: Maintains 5-minute conversation context
-- **Discord Bridge**: Messages on #jeff are mirrored to Discord webhook
+- **Discord Bridge**: Bidirectional sync - Discord ↔ MeshCore #jeff channel
+- **HTTP API**: Send messages without interrupting bot service (localhost:8080)
 
 ### Commands
 
@@ -106,6 +107,24 @@ python3 test_jeff.py --test
 
 ## Managing Jeff (Production)
 
+### Send Messages (Without Interrupting Bot)
+```bash
+# Send to #jeff channel (default)
+ssh base "cd ~/jeff && ./jeff_say.sh 'Your message here'"
+
+# Send to specific channel
+ssh base "cd ~/jeff && ./jeff_say.sh 'Hello public' 0"
+ssh base "cd ~/jeff && ./jeff_say.sh 'Testing' 6"
+
+# Via HTTP API directly
+ssh base "curl -X POST http://localhost:8080/send -H 'Content-Type: application/json' -d '{\"message\": \"Hello\", \"channel\": 7}'"
+
+# Check bot status
+ssh base "curl http://localhost:8080/status"
+```
+
+See [docs/API.md](docs/API.md) for full HTTP API documentation.
+
 ### Check Status
 ```bash
 ssh base "sudo systemctl status meshcore-bot"
@@ -141,7 +160,7 @@ ssh base "sudo systemctl disable meshcore-bot"
 ### Update Jeff
 ```bash
 # Deploy new version
-scp meshcore_bot.py base:~/jeff/
+scp -r meshcore_bot main.py jeff_say.sh requirements.txt base:~/jeff/
 ssh base "sudo systemctl restart meshcore-bot"
 ```
 
