@@ -412,6 +412,159 @@ class MeshCoreBot:
             logger.debug(f"Failed to get advert path: {e}")
             return None
 
+    async def _get_node_name_from_hash(self, node_hash_bytes: bytes, contacts: Optional[Dict] = None) -> str:
+        """
+        Look up a node's name from its hash.
+
+        Args:
+            node_hash_bytes: Hash bytes to search for
+            contacts: Optional contacts dict (will query if not provided)
+
+        Returns:
+            Node name or "??" if not found
+        """
+        try:
+            if contacts is None:
+                contacts_result = await self.meshcore.commands.get_contacts()
+                if contacts_result.type != EventType.CONTACTS:
+                    return "??"
+                contacts = contacts_result.payload
+
+            for key, contact in contacts.items():
+                pubkey = contact.get('public_key', '')
+                if not pubkey:
+                    continue
+
+                # Handle both hex string and bytes
+                pubkey_bytes = bytes.fromhex(pubkey) if isinstance(pubkey, str) else pubkey
+
+                # Check if pubkey starts with node_hash_bytes
+                if pubkey_bytes[:len(node_hash_bytes)] == node_hash_bytes:
+                    return contact.get('adv_name', '??')
+
+                # Also check hex string comparison
+                if isinstance(pubkey, str) and pubkey[:len(node_hash_bytes)*2] == node_hash_bytes.hex():
+                    return contact.get('adv_name', '??')
+
+            return "??"
+
+        except Exception as e:
+            logger.debug(f"Error looking up node name: {e}")
+            return "??"
+
+    async def _get_compact_path(self, message: Dict, sender_id: str) -> str:
+        """
+        Get compact path in hash:name format with suburbs, sender to receiver.
+
+        Args:
+            message: Message dict with path info
+            sender_id: Sender identifier
+
+        Returns:
+            Path string like "a1:Bob Pyrmont -> 3f:Tower Chatswood -> YOU"
+        """
+        try:
+            sender_prefix = message.get('pubkey_prefix', '')
+            path_len_msg = message.get('path_len', 0)
+
+            # Get all contacts
+            contacts_result = await self.meshcore.commands.get_contacts()
+            if contacts_result.type != EventType.CONTACTS:
+                return f"{sender_prefix[:2]}:{sender_id} -> YOU"
+
+            contacts = contacts_result.payload
+
+            # Load API nodes for suburb lookups
+            sydney_nodes = self.api.get_sydney_nodes()
+            nsw_nodes = self.api.get_nsw_nodes()
+            all_nodes = sydney_nodes + nsw_nodes
+
+            # Find sender contact
+            sender_contact = None
+            sender_pubkey = message.get('sender_pubkey', '')
+
+            for key, contact in contacts.items():
+                contact_pubkey = contact.get('public_key', '')
+                # Match by pubkey prefix (first 12 hex chars = 6 bytes)
+                if contact_pubkey[:12] == sender_prefix:
+                    sender_contact = contact
+                    break
+                # Also try matching full pubkey if available
+                if sender_pubkey and contact_pubkey == sender_pubkey:
+                    sender_contact = contact
+                    break
+
+            if not sender_contact:
+                return f"{sender_prefix[:2]}:{sender_id} -> YOU"
+
+            sender_name = sender_contact.get('adv_name', sender_id)
+            sender_hash = sender_contact.get('public_key', '')[:2]
+
+            # Look up sender suburb from API
+            sender_suburb = self._get_node_suburb(sender_contact.get('public_key', ''), all_nodes)
+            sender_part = f"{sender_hash}:{sender_name} {sender_suburb}".strip()
+
+            # Direct connection (path_len = 255)
+            if path_len_msg == 255 or path_len_msg == 0:
+                return f"{sender_part} -> YOU"
+
+            # Get path from contact
+            out_path = sender_contact.get('out_path', b'')
+            out_path_len = sender_contact.get('out_path_len', -1)
+
+            if out_path_len <= 0:
+                return f"{sender_part} -> YOU"
+
+            # Build path string
+            path_parts = [sender_part]
+
+            # Parse intermediate nodes (8 bytes per hop for full hash, 6 for short)
+            bytes_per_hop = 8 if out_path_len * 8 <= len(out_path) else 6
+
+            for i in range(out_path_len):
+                start = i * bytes_per_hop
+                end = start + bytes_per_hop
+                if end > len(out_path):
+                    break
+
+                node_hash = out_path[start:end]
+                node_name = await self._get_node_name_from_hash(node_hash, contacts)
+                hash_prefix = node_hash.hex()[:2]
+
+                # Find full pubkey for this hop to lookup suburb
+                hop_pubkey = None
+                for key, contact in contacts.items():
+                    contact_pubkey = contact.get('public_key', '')
+                    if contact_pubkey.startswith(node_hash.hex()):
+                        hop_pubkey = contact_pubkey
+                        break
+
+                suburb = self._get_node_suburb(hop_pubkey, all_nodes) if hop_pubkey else ""
+                node_part = f"{hash_prefix}:{node_name} {suburb}".strip()
+                path_parts.append(node_part)
+
+            path_parts.append("YOU")
+
+            return " -> ".join(path_parts)
+
+        except Exception as e:
+            logger.error(f"Error building compact path: {e}", exc_info=True)
+            return f"{sender_id} -> YOU"
+
+    def _get_node_suburb(self, pubkey: str, nodes: list) -> str:
+        """Look up suburb from API nodes based on public key."""
+        if not pubkey or not nodes:
+            return ""
+
+        for node in nodes:
+            if node.get('public_key') == pubkey:
+                location = node.get('location', {})
+                if isinstance(location, dict):
+                    suburb = location.get('suburb', '')
+                    if suburb:
+                        return suburb
+        return ""
+
     def _build_system_prompt(self) -> str:
         """Build the system prompt with MeshCore expertise."""
         return """You are Jeff, a technical MeshCore mesh networking expert. You run as a bot on the NSW MeshCore network.
@@ -940,82 +1093,10 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             if 'help' in words:
                 return "Commands: test,ping,path,status,nodes,route,trace,help | Or ask me about MeshCore"
 
-            # Handle "path" command - respond with path details using CMD_GET_ADVERT_PATH
+            # Handle "path" command - respond with compact path including suburbs
             if 'path' in words:
-                now = datetime.now().strftime("%H:%M:%S")
-                sender_pubkey = message.get('sender_pubkey', '')
-                sender_name = sender_id
-                if ':' in text:
-                    sender_name = text.split(':', 1)[0].strip()
-
-                # If no pubkey in payload (channel messages), try to get from MeshCore API
-                if not sender_pubkey or len(sender_pubkey) < 14:
-                    try:
-                        # Look up sender in MeshCore API by node name
-                        sydney_nodes = self.api.get_sydney_nodes()
-                        node = self._find_best_node_match(sydney_nodes, sender_name)
-
-                        if not node:
-                            # Try NSW nodes if not in Sydney
-                            nsw_nodes = self.api.get_nsw_nodes()
-                            node = self._find_best_node_match(nsw_nodes, sender_name)
-
-                        if node and 'public_key' in node:
-                            sender_pubkey = node['public_key']
-                            logger.info(f"🔑 Found {sender_name} pubkey via API: {sender_pubkey[:14]}...")
-                        else:
-                            logger.debug(f"No API node found for {sender_name}")
-                    except Exception as e:
-                        logger.debug(f"Error looking up node in API: {e}")
-
-                # Try to query advert path if we have the sender's public key
-                path_hops = None
-                if sender_pubkey and len(sender_pubkey) >= 14:
-                    try:
-                        path_hops = await self._get_advert_path(sender_pubkey)
-                        if path_hops:
-                            logger.info(f"🛤️  Advert path: {','.join([f'{h:02x}' for h in path_hops])}")
-                        else:
-                            logger.debug(f"No cached advert path for {sender_name}")
-                    except Exception as e:
-                        logger.debug(f"Path query failed: {e}")
-                else:
-                    logger.debug(f"No pubkey available for {sender_name}")
-
-                if path_hops:
-                    # Single hop - compact format like Father ROLO: "📡 Path: f1"
-                    if len(path_hops) == 1:
-                        hex_prefix = f"{path_hops[0]:02x}"
-                        return f"📡 Path: {hex_prefix}"
-
-                    # Multiple hops - show each on new line like "32: Overkill - Staples"
-                    path_parts = []
-                    for byte_val in path_hops:
-                        hex_prefix = f"{byte_val:02x}"
-
-                        # Look up node by public key prefix
-                        sydney_nodes = self.api.get_sydney_nodes()
-                        node = self._find_best_node_match(sydney_nodes, hex_prefix)
-
-                        if not node:
-                            # Try NSW if not in Sydney
-                            nsw_nodes = self.api.get_nsw_nodes()
-                            node = self._find_best_node_match(nsw_nodes, hex_prefix)
-
-                        if node:
-                            node_name = node.get('adv_name', f'Node {hex_prefix}')
-                            path_parts.append(f"{hex_prefix}: {node_name}")
-                        else:
-                            path_parts.append(f"{hex_prefix}: Unknown")
-
-                    return "\n".join(path_parts)
-                else:
-                    # No cached path - show hop count from message payload
-                    path_len = message.get('path_len', 0)
-                    if path_len == 0 or path_len == 255:
-                        return "📡 Path: Direct"
-                    else:
-                        return f"📡 Path: {path_len} hops"
+                compact_path = await self._get_compact_path(message, sender_id)
+                return compact_path
 
             # Build context with message metadata for Claude to use
             context_parts = []
