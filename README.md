@@ -11,10 +11,11 @@ Jeff is running as a systemd daemon on the base server, actively monitoring the 
 ## Features
 
 ### Smart Triggering
-- **Name mentions**: Responds to `@jeff`, `#jeff`, or `jeff` on ANY channel
-- **Keywords**: Responds to `test`, `ping`, `path`, `status`, `nodes`, `help`, `route`, `trace` on allowed channels (sydney, test, rolojnr)
+- **Channel**: Jeff only responds on the **#jeff** channel (channel index 7)
+- **Keywords**: Responds to `test`, `ping`, `path`, `status`, `nodes`, `help`, `route`, `trace`
 - **Node questions**: Automatically detects queries about specific nodes/repeaters
-- **Follow-ups**: Maintains 5-minute conversation context - no need to mention @jeff for every message
+- **Follow-ups**: Maintains 5-minute conversation context
+- **Discord Bridge**: Messages on #jeff are mirrored to Discord webhook
 
 ### Commands
 
@@ -53,7 +54,8 @@ Returns: `Bradbury Repeater ☢(RPT)\|-34.09,150.81\|915.8MHz\|SF11\|BW250`
 - **LLM**: AWS Bedrock Claude 3.5 Haiku (fast, cost-effective)
 - **API**: MeshCore Map API (https://map.meshcore.dev/api/v1/nodes)
 - **Regions**: Greater Sydney (-34.5 to -33.0, 150.0 to 151.5) + NSW fallback
-- **Channels**: Responds on sydney(1), rolojnr(5), test(6) for keywords; any channel for name mentions
+- **Channels**: #jeff (channel 7) only - Discord bridged
+- **Discord**: Webhook integration for message mirroring (see [DISCORD_SETUP.md](DISCORD_SETUP.md))
 
 ## Files
 
@@ -61,9 +63,11 @@ Returns: `Bradbury Repeater ☢(RPT)\|-34.09,150.81\|915.8MHz\|SF11\|BW250`
 - **`test_jeff.py`** - Offline testing interface
 - **`requirements.txt`** - Python dependencies
 - **`.env.example`** - Configuration template
+- **`.env.local.example`** - Local secrets template (Discord webhook)
 - **`meshcore-bot.service`** - Systemd service file
 - **`SETUP.md`** - Detailed setup instructions
 - **`SERVICE_SETUP.md`** - Systemd service configuration
+- **`DISCORD_SETUP.md`** - Discord webhook integration guide
 - **`JEFF_FEATURES.md`** - Complete feature documentation
 
 ## Quick Start

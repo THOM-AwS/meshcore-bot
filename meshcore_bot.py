@@ -1051,7 +1051,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 triggered = any(word in other_keywords for word in words)
                 is_node_question = any(keyword in msg_part for keyword in node_question_keywords)
                 if not triggered and not is_node_question:
-                    logger.info(f"⏭️  No trigger/question from {sender_id}")
+                    logger.info(f"⏭️  {sender_id}: No trigger keyword or node question detected")
                     return None
             else:
                 # On other channels, don't respond unless mentioned by name
@@ -1455,11 +1455,16 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
 
             # Format status message
-            status_msg = (f"Status @ {time_str}: "
-                         f"Sydney:{sydney_companions}c/{sydney_repeaters}r "
-                         f"NSW:{nsw_companions}c/{nsw_repeaters}r (7d)")
+            status_msg = (f"Companion/Repeater Count | "
+                         f"NSW {nsw_companions}/{nsw_repeaters} | "
+                         f"Sydney {sydney_companions}/{sydney_repeaters}")
 
             logger.info(f"📢 Broadcasting scheduled status to channel {self.jeff_channel}: {status_msg}")
+
+            # Log to chat file
+            channel_name = self.channel_map.get(self.jeff_channel, f'ch{self.jeff_channel}')
+            chat_logger.info(f"[{channel_name}] Jeff: {status_msg}")
+
             await self.send_message(status_msg, channel=self.jeff_channel)
 
         except Exception as e:
