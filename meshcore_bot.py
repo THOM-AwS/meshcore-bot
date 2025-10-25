@@ -1165,14 +1165,43 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
         except Exception as e:
             logger.error(f"❌ Error sending message: {e}", exc_info=True)
 
+    def _load_channel_config(self) -> Optional[Dict]:
+        """
+        Load channel configuration from config file.
+
+        The device firmware stores channels locally but doesn't expose them via API.
+        Users should export their config and place it in ~/.meshcore_channels.json
+
+        Returns:
+            Dict mapping channel index to name, or None if file not found
+        """
+        import os
+        config_paths = [
+            os.path.expanduser('~/.meshcore_channels.json'),
+            '/home/meshcore/.meshcore_channels.json',
+            '/home/tom/.meshcore_channels.json',
+        ]
+
+        for config_path in config_paths:
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        logger.info(f"✓ Loaded channel config from {config_path}")
+                        return config
+                except Exception as e:
+                    logger.warning(f"Could not load {config_path}: {e}")
+
+        return None
+
     def _build_channel_map(self, self_info: Optional[Dict] = None):
         """
-        Build channel map from device info or use fallback defaults.
+        Build channel map from config file, device info, or use fallback defaults.
 
         Args:
             self_info: Optional self info from device
         """
-        # Default channel mapping (fallback if device doesn't provide info)
+        # Default channel mapping (fallback only)
         default_channels = {
             0: 'Public',
             1: '#sydney',
@@ -1184,8 +1213,9 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             7: '#jeff'
         }
 
-        # Try to extract channels from self_info if available
+        # Try to extract channels from self_info/device query first (most reliable)
         if self_info and 'channels' in self_info:
+            logger.info("Using channel configuration from device")
             channels = self_info['channels']
             for idx, channel_data in enumerate(channels):
                 if isinstance(channel_data, dict) and 'name' in channel_data:
@@ -1198,9 +1228,26 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                         self.jeff_channel = idx
                         logger.info(f"✓ Found #jeff channel at index {idx}")
 
-        # If no channels from device, use defaults
+        # Try config file as fallback
         if not self.channel_map:
-            logger.warning("⚠️  No channel info from device, using defaults")
+            config = self._load_channel_config()
+            if config and 'channels' in config:
+                logger.info("Using channel configuration from config file")
+                for idx, channel_data in enumerate(config['channels']):
+                    if isinstance(channel_data, dict) and 'name' in channel_data:
+                        channel_name = channel_data['name']
+                        self.channel_map[idx] = channel_name
+                        self.channel_name_to_idx[channel_name] = idx
+
+                        # Detect #jeff channel
+                        if channel_name.lower() in ['#jeff', 'jeff']:
+                            self.jeff_channel = idx
+                            logger.info(f"✓ Found #jeff channel at index {idx}")
+
+        # If no channels from device or config, use defaults
+        if not self.channel_map:
+            logger.warning("⚠️  No channels from device or config file, using defaults")
+            logger.warning("⚠️  To configure channels, export your device config and save channels to ~/.meshcore_channels.json")
             self.channel_map = default_channels.copy()
             # Build reverse lookup
             for idx, name in self.channel_map.items():
@@ -1680,25 +1727,71 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     else:
                         logger.info(f"👥 CONTACTS: Loaded")
 
+            async def capture_channel_info(event):
+                if hasattr(event, 'payload'):
+                    channel_info = event.payload
+                    startup_info['channel_info'] = channel_info
+                    logger.debug(f"📡 CHANNEL_INFO received: {channel_info}")
+
             # Subscribe to startup info events
             self.meshcore.subscribe(EventType.SELF_INFO, capture_self_info)
             self.meshcore.subscribe(EventType.DEVICE_INFO, capture_device_info)
             self.meshcore.subscribe(EventType.BATTERY, capture_battery)
             self.meshcore.subscribe(EventType.CURRENT_TIME, capture_current_time)
             self.meshcore.subscribe(EventType.CONTACTS, capture_contacts)
+            self.meshcore.subscribe(EventType.CHANNEL_INFO, capture_channel_info)
 
             try:
                 # Request contacts
                 await self.meshcore.commands.get_contacts()
+
+                # Query channels directly from device using get_channel()
+                if hasattr(self.meshcore.commands, 'get_channel'):
+                    logger.info("Querying channels from device...")
+                    channels_data = []
+
+                    # Query up to 16 channels (typical max)
+                    for i in range(16):
+                        try:
+                            result = await asyncio.wait_for(
+                                self.meshcore.commands.get_channel(i),
+                                timeout=2.0
+                            )
+
+                            if result.type == EventType.CHANNEL_INFO:
+                                payload = result.payload
+                                name = payload.get('channel_name', f'Channel{i}')
+                                secret = payload.get('channel_secret', b'')
+
+                                channels_data.append({
+                                    'name': name,
+                                    'secret': secret.hex() if secret else ''
+                                })
+                                logger.info(f"  Channel {i}: {name}")
+                            else:
+                                # No more channels
+                                break
+
+                        except asyncio.TimeoutError:
+                            # Channel not configured or end of channels
+                            break
+                        except Exception as e:
+                            logger.debug(f"  Channel {i}: {e}")
+                            break
+
+                    if channels_data:
+                        logger.info(f"✓ Loaded {len(channels_data)} channels from device")
+                        self._build_channel_map({'channels': channels_data})
+
                 # Give events time to arrive
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
 
             except Exception as e:
                 logger.warning(f"Could not query device info: {e}")
 
-            # Build channel map if not already done (fallback)
+            # Final fallback to config file or defaults
             if not self.channel_map:
-                logger.info("Building channel map from defaults...")
+                logger.warning("⚠️  Could not get channels from device, trying config file...")
                 self._build_channel_map()
 
             logger.info("="*60)
