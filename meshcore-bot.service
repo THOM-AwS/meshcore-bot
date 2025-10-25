@@ -8,7 +8,7 @@ User=YOUR_USERNAME
 WorkingDirectory=/home/YOUR_USERNAME/jeff
 Environment="PATH=/home/YOUR_USERNAME/jeff/venv/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=/home/YOUR_USERNAME/jeff/.env
-ExecStart=/home/YOUR_USERNAME/jeff/venv/bin/python3 /home/YOUR_USERNAME/jeff/meshcore_bot.py
+ExecStart=/home/YOUR_USERNAME/jeff/venv/bin/python3 /home/YOUR_USERNAME/jeff/main.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
