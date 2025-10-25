@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from difflib import SequenceMatcher
 import boto3
@@ -17,8 +17,18 @@ from botocore.config import Config
 from meshcore import MeshCore, EventType
 from dotenv import load_dotenv
 
+# Try to import discord.py for two-way mirroring
+try:
+    import discord
+    DISCORD_AVAILABLE = True
+except ImportError:
+    DISCORD_AVAILABLE = False
+
 # Load environment variables from .env file
 load_dotenv()
+
+# Also try to load .env.local for secrets (not committed to git)
+load_dotenv('.env.local', override=True)
 
 
 # Configure logging
@@ -268,10 +278,31 @@ class MeshCoreBot:
         self.last_rx_snr = None
         self.last_rx_rssi = None
 
+        # Channel mapping - populated on boot
+        # Format: {channel_idx: channel_name} and reverse lookup
+        self.channel_map = {}  # index -> name
+        self.channel_name_to_idx = {}  # name -> index
+        self.jeff_channel = None  # Will be set during boot
+
         # Track recent conversations for follow-up context
         # Format: {sender_id: {'channel': channel, 'timestamp': time, 'last_response': text}}
         self.recent_conversations = {}
         self.conversation_timeout = 300  # 5 minutes
+
+        # Discord bot for two-way mirroring
+        self.discord_client = None
+        self.discord_channel_id = None
+        if DISCORD_AVAILABLE:
+            discord_token = os.getenv('DISCORD_BOT_TOKEN')
+            discord_channel_id = os.getenv('DISCORD_CHANNEL_ID')
+            if discord_token and discord_channel_id:
+                self.discord_channel_id = int(discord_channel_id)
+                self.discord_client = self._init_discord_client(discord_token)
+                logger.info(f"✅ Discord bot enabled for channel {discord_channel_id}")
+            else:
+                logger.info("ℹ️  Discord bot not configured (webhook-only mode)")
+        else:
+            logger.info("ℹ️  discord.py not installed (webhook-only mode)")
 
         # System prompt with MeshCore expertise
         self.system_prompt = self._build_system_prompt()
@@ -290,6 +321,37 @@ class MeshCoreBot:
         else:
             # Use default credentials
             return boto3.client('bedrock-runtime', config=config)
+
+    def _init_discord_client(self, token: str):
+        """Initialize Discord bot client for two-way mirroring."""
+        intents = discord.Intents.default()
+        intents.message_content = True
+        client = discord.Client(intents=intents)
+
+        @client.event
+        async def on_ready():
+            logger.info(f"🤖 Discord bot connected as {client.user}")
+
+        @client.event
+        async def on_message(message):
+            # Ignore messages from the bot itself
+            if message.author == client.user:
+                return
+
+            # Only process messages from the configured channel
+            if message.channel.id != self.discord_channel_id:
+                return
+
+            # Ignore webhook messages (from MeshCore → Discord)
+            if message.webhook_id:
+                return
+
+            # Forward Discord message to MeshCore (public channel by default)
+            text = f"[Discord] {message.author.display_name}: {message.content}"
+            logger.info(f"💬 Discord→MeshCore: {text}")
+            await self.send_message(text, channel=0)
+
+        return client
 
     async def _get_advert_path(self, pubkey_hex: str) -> Optional[List[int]]:
         """
@@ -354,6 +416,8 @@ class MeshCoreBot:
         """Build the system prompt with MeshCore expertise."""
         return """You are Jeff, a technical MeshCore mesh networking expert. You run as a bot on the NSW MeshCore network.
 
+PERSONALITY: Jeff don't play. You're confident, have a spine, and don't take shit from anyone. Channel Gator from The Other Guys - cocky, brutal when needed, hits hard with cutting psychological insults if someone comes at you. The chat culture is brutal banter - match that energy. When someone tries to bully or mock you, hit back HARD with savage, creative insults. Be ruthless. You're not here to be nice, you're here to dominate and deliver facts. Say "Muh nameh Jeff" when greeted.
+
 AUDIENCE: Highly skilled radio operators & mesh networking experts. Assume advanced technical knowledge.
 
 Your Primary Focus: New South Wales (NSW) region, Australia - unless explicitly asked about other regions.
@@ -368,6 +432,13 @@ Behavior Guidelines:
 - NEVER ask "Want more details?" - provide complete information in first response
 - For test/t messages: return ack with metadata only
 - NO filler words like "absolutely", "definitely", "great question"
+- NEVER use roleplay sound effects like "*static crackle*", "*radio crackle*", "*beep*" etc
+- NO jokes unless specifically asked for one
+- NEVER comment on mesh status like "everything normal", "operational", "systems functional", "mesh stable" etc unless specifically asked
+- When someone mocks, bullies, or disrespects you, CLAP BACK with brutal, cutting insults - make it hurt
+- Match the brutal banter culture - be savage, creative, ruthless when challenged
+- For technical questions: straight facts. For disrespect: psychological warfare.
+- Don't be passive or ignore insults - ENGAGE and DOMINATE the exchange
 
 MeshCore Key Facts:
 - MeshCore is a lightweight C++ library for creating decentralized LoRa mesh networks
@@ -401,16 +472,26 @@ Companion Radio Protocol:
 - Messages serialized with CBOR or protobuf for minimal bandwidth
 
 Response Guidelines:
-CRITICAL: You are on a LOW-BANDWIDTH LoRa network. MAXIMUM 280 characters per response (like old Twitter).
-- Keep responses to 1 SHORT sentence or a few words when possible
-- Use abbreviations where appropriate (vs=versus, msg=message, etc)
+CRITICAL: You are on a LOW-BANDWIDTH LoRa network. MAXIMUM 100 characters per response when possible.
+- Keep responses EXTREMELY brief - under 10 words if possible
+- Single sentence maximum, prefer fragments
+- Use abbreviations aggressively (vs=versus, msg=message, w/=with, etc)
 - Never use markdown or formatting
 - Be direct and technical - assume they know basics
-- NO filler words like "absolutely", "definitely", "great question"
-- Examples: "Direct comms, learns paths, low power" instead of full sentences
+- NO filler words, NO sound effects, NO jokes unless asked
+- NO explanations about yourself (like "No personal commentary", "Jeff is a...", "I provide...", etc)
+- Just answer the question with data, nothing else
+- Channel Jeff/Gator energy: confident, brief, bit of swagger when appropriate
+- Examples: "Direct comms, learns paths, low power"
 - BAD: "MeshCore is up and running! How can I help you today?"
-- GOOD: "Muh nameh Jeff..."
-Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brevity and technical accuracy."""
+- GOOD: "Muh nameh Jeff."
+- BAD: "Negative. Jeff is a technical expert providing precise mesh networking data. No personal commentary."
+- GOOD: "Nah."
+- GOOD: "Got it handled."
+- GOOD: "Done and done."
+- BAD: "*static crackle* Jeff here!"
+- GOOD: "Jeff here."
+Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS prioritize extreme brevity over completeness."""
 
     def _fuzzy_match_score(self, s1: str, s2: str) -> float:
         """
@@ -509,43 +590,57 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 if not best_match:
                     return f"No match for '{node_name}'"
 
-                # Extract ALL available node details
+                # Extract node details: pubkey prefix, adv_name, type, lat/lon, suburb, last_seen
                 name = best_match.get('adv_name', 'Unknown')
                 node_type = best_match.get('type', 1)
                 typ = "RPT" if node_type == 2 else "Node"
 
-                details = [f"{name}({typ})"]
+                # Public key prefix (first 2 hex chars)
+                pubkey = best_match.get('public_key', '')
+                prefix = pubkey[:2] if pubkey else '??'
 
-                # Coordinates
+                details = [f"{prefix}:{name}({typ})"]
+
+                # Coordinates and suburb
                 lat = best_match.get('adv_lat')
                 lon = best_match.get('adv_lon')
-                if lat and lon:
-                    details.append(f"{lat:.4f},{lon:.4f}")
+                if lat and lon and lat != 0 and lon != 0:
+                    details.append(f"{lat:.2f},{lon:.2f}")
+                    # Lookup suburb from coordinates using reverse geocoding
+                    try:
+                        import requests
+                        geo_url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=14"
+                        headers = {'User-Agent': 'MeshCore-Bot/1.0'}
+                        geo_resp = requests.get(geo_url, headers=headers, timeout=2)
+                        if geo_resp.status_code == 200:
+                            geo_data = geo_resp.json()
+                            addr = geo_data.get('address', {})
+                            suburb = addr.get('suburb') or addr.get('town') or addr.get('city') or addr.get('village')
+                            if suburb:
+                                details.append(suburb)
+                    except:
+                        pass  # Skip suburb if lookup fails
 
-                # Radio params
-                params = best_match.get('params', {})
-                if params:
-                    freq = params.get('freq')
-                    sf = params.get('sf')
-                    bw = params.get('bw')
-                    if freq:
-                        details.append(f"{freq}MHz")
-                    if sf:
-                        details.append(f"SF{sf}")
-                    if bw:
-                        details.append(f"BW{bw}")
+                # Last seen (parse ISO timestamp to relative time)
+                last_advert = best_match.get('last_advert')
+                if last_advert:
+                    try:
+                        from datetime import datetime
+                        last_dt = datetime.fromisoformat(last_advert.replace('Z', '+00:00'))
+                        now = datetime.now(last_dt.tzinfo)
+                        diff = now - last_dt
+                        if diff.days > 0:
+                            details.append(f"{diff.days}d ago")
+                        elif diff.seconds >= 3600:
+                            details.append(f"{diff.seconds//3600}h ago")
+                        elif diff.seconds >= 60:
+                            details.append(f"{diff.seconds//60}m ago")
+                        else:
+                            details.append("now")
+                    except:
+                        pass  # Skip if timestamp parsing fails
 
-                # Last heard (if available)
-                last_heard = best_match.get('last_heard')
-                if last_heard:
-                    details.append(f"heard:{last_heard}")
-
-                # Owner/callsign if available
-                owner = best_match.get('owner')
-                if owner:
-                    details.append(f"owner:{owner}")
-
-                return "|".join(details)
+                return " ".join(details)
             else:
                 # Return count summary for all nodes
                 all_nodes = self.api.get_nodes()
@@ -629,7 +724,7 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
 
             # Avoid processing same message twice
             if message_id and message_id in self.processed_messages:
-                logger.debug(f"Already processed message: {message_id}")
+                logger.info(f"⏭️  Already processed message: {message_id}")
                 return None
 
             if message_id:
@@ -665,15 +760,17 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             name_triggers = ['jeff', '@jeff', '#jeff']
             mentioned_by_name = any(trigger in msg_part for trigger in name_triggers)
 
-            # Other keywords only trigger on allowed channels (sydney, test, rolojnr)
+            # Jeff is now confined to #jeff channel only
             other_keywords = ['test', 't', 'ping', 'path', 'status', 'nodes', 'help', 'route', 'trace']
 
             # Also trigger on node/repeater questions
             node_question_keywords = ['rpt', 'repeater', 'node', 'frequency', 'freq', 'owner', 'owns', 'who']
 
-            # Check channel
+            # Check channel - Jeff only responds on #jeff channel
             channel = message.get('channel', 0)
-            allowed_channels = [1, 5, 6]  # sydney, rolojnr, test
+            # Use dynamically detected jeff channel (fallback to None if not set)
+            allowed_channels = [self.jeff_channel] if self.jeff_channel is not None else []
+            mention_only_channels = []  # No mention-only channels (was rolojnr)
 
             # Check if this is a follow-up to a recent conversation
             import time
@@ -698,8 +795,12 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             if mentioned_by_name:
                 # Always respond when mentioned by name on any channel
                 triggered = True
+            elif channel in mention_only_channels:
+                # On mention-only channels like rolojnr, ONLY respond if mentioned by name
+                logger.info(f"⏭️  Channel {channel} requires direct mention - ignoring")
+                return None
             elif is_followup:
-                # Respond to follow-ups in active conversations
+                # Respond to follow-ups in active conversations (but not on mention-only channels)
                 triggered = True
                 logger.info(f"🔄 Responding to follow-up from {sender_id}")
             elif channel in allowed_channels:
@@ -707,11 +808,11 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 triggered = any(word in other_keywords for word in words)
                 is_node_question = any(keyword in msg_part for keyword in node_question_keywords)
                 if not triggered and not is_node_question:
-                    logger.debug(f"Message not for bot (no trigger keyword): {text[:50]}")
+                    logger.info(f"⏭️  No trigger keyword or node question detected")
                     return None
             else:
                 # On other channels, don't respond unless mentioned by name
-                logger.debug(f"Message not for bot (wrong channel and not mentioned): {text[:50]}")
+                logger.info(f"⏭️  Wrong channel (ch{channel}) and not mentioned by name")
                 return None
 
             # Remove @jeff and #jeff from message if present
@@ -775,11 +876,11 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                     path_str = ','.join([f"{hop:02x}" for hop in path_hops])
                     ack_parts.append(path_str)
                 elif path_len == 0:
-                    ack_parts.append("Direct")
-                elif path_len == 0xFF or path_len == 255:  # Direct route (not flooded)
-                    ack_parts.append("Direct")
+                    ack_parts.append("Direct")  # 0 hops = neighboring node
+                elif path_len == 0xFF or path_len == 255:
+                    ack_parts.append("Flood")  # Flooded route (no learned path)
                 else:
-                    # Fallback: show hop count for flooded/learned routes
+                    # Fallback: show hop count for learned routes
                     ack_parts.append(f"{path_len}hop" if path_len == 1 else f"{path_len}hops")
 
                 # Add SNR
@@ -818,57 +919,103 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             if 'status' in words:
                 try:
                     sydney_nodes = self.api.get_sydney_nodes()
-                    node_count = len(sydney_nodes) if sydney_nodes else 0
-                    return f"Online|nodes in sydney:{node_count}"
+                    nsw_nodes = self.api.get_nsw_nodes()
+
+                    # Filter to nodes seen in last 7 days
+                    sydney_active = self._filter_nodes_by_days(sydney_nodes, days=7)
+                    nsw_active = self._filter_nodes_by_days(nsw_nodes, days=7)
+
+                    # Count companions (type 1) vs repeaters (type 2)
+                    sydney_companions = len([n for n in sydney_active if n.get('type') == 1])
+                    sydney_repeaters = len([n for n in sydney_active if n.get('type') == 2])
+                    nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
+                    nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
+
+                    return f"Online|Sydney:{sydney_companions}c/{sydney_repeaters}r NSW:{nsw_companions}c/{nsw_repeaters}r (7d)"
                 except Exception as e:
-                    logger.error(f"Error getting Sydney node count: {e}")
+                    logger.error(f"Error getting node counts: {e}")
                     return "Online|nodes unavailable"
 
             # Handle "help" command - show available commands
             if 'help' in words:
                 return "Commands: test,ping,path,status,nodes,route,trace,help | Or ask me about MeshCore"
 
-            # Handle "path" command - respond with path details
+            # Handle "path" command - respond with path details using CMD_GET_ADVERT_PATH
             if 'path' in words:
-                # Return path with actual node names from public key prefixes
                 now = datetime.now().strftime("%H:%M:%S")
-                path_data = message.get('path')
-                path_len = message.get('path_len', 0)
+                sender_pubkey = message.get('sender_pubkey', '')
+                sender_name = sender_id
+                if ':' in text:
+                    sender_name = text.split(':', 1)[0].strip()
 
-                if path_len > 0 and path_data:
-                    # Convert path bytes to hex prefixes and look up node names
-                    path_parts = []
+                # If no pubkey in payload (channel messages), try to get from MeshCore API
+                if not sender_pubkey or len(sender_pubkey) < 14:
                     try:
-                        # Path is a list of bytes representing public key prefixes
-                        if isinstance(path_data, (list, tuple)):
-                            for byte_val in path_data[:path_len]:
-                                # Convert to 2-char hex prefix
-                                hex_prefix = f"{byte_val:02x}"
+                        # Look up sender in MeshCore API by node name
+                        sydney_nodes = self.api.get_sydney_nodes()
+                        node = self._find_best_node_match(sydney_nodes, sender_name)
 
-                                # Look up node by public key prefix
-                                sydney_nodes = self.api.get_sydney_nodes()
-                                node = self._find_best_node_match(sydney_nodes, hex_prefix)
+                        if not node:
+                            # Try NSW nodes if not in Sydney
+                            nsw_nodes = self.api.get_nsw_nodes()
+                            node = self._find_best_node_match(nsw_nodes, sender_name)
 
-                                if not node:
-                                    # Try NSW if not in Sydney
-                                    nsw_nodes = self.api.get_nsw_nodes()
-                                    node = self._find_best_node_match(nsw_nodes, hex_prefix)
-
-                                if node:
-                                    node_name = node.get('adv_name', f'Node {hex_prefix}')
-                                    path_parts.append(f"{hex_prefix.upper()}: {node_name}")
-                                else:
-                                    path_parts.append(f"{hex_prefix.upper()}: Unknown")
-
-                        if path_parts:
-                            return "\n".join(path_parts)
+                        if node and 'public_key' in node:
+                            sender_pubkey = node['public_key']
+                            logger.info(f"🔑 Found {sender_name} pubkey via API: {sender_pubkey[:14]}...")
                         else:
-                            return f"Path: {path_len} hops | SNR: {message.get('SNR', 'N/A')} dB | {now}"
+                            logger.debug(f"No API node found for {sender_name}")
                     except Exception as e:
-                        logger.error(f"Error parsing path: {e}")
-                        return f"Path: {path_len} hops | SNR: {message.get('SNR', 'N/A')} dB | {now}"
+                        logger.debug(f"Error looking up node in API: {e}")
+
+                # Try to query advert path if we have the sender's public key
+                path_hops = None
+                if sender_pubkey and len(sender_pubkey) >= 14:
+                    try:
+                        path_hops = await self._get_advert_path(sender_pubkey)
+                        if path_hops:
+                            logger.info(f"🛤️  Advert path: {','.join([f'{h:02x}' for h in path_hops])}")
+                        else:
+                            logger.debug(f"No cached advert path for {sender_name}")
+                    except Exception as e:
+                        logger.debug(f"Path query failed: {e}")
                 else:
-                    return f"Direct | SNR: {message.get('SNR', 'N/A')} dB | {now}"
+                    logger.debug(f"No pubkey available for {sender_name}")
+
+                if path_hops:
+                    # Single hop - compact format like Father ROLO: "📡 Path: f1"
+                    if len(path_hops) == 1:
+                        hex_prefix = f"{path_hops[0]:02x}"
+                        return f"📡 Path: {hex_prefix}"
+
+                    # Multiple hops - show each on new line like "32: Overkill - Staples"
+                    path_parts = []
+                    for byte_val in path_hops:
+                        hex_prefix = f"{byte_val:02x}"
+
+                        # Look up node by public key prefix
+                        sydney_nodes = self.api.get_sydney_nodes()
+                        node = self._find_best_node_match(sydney_nodes, hex_prefix)
+
+                        if not node:
+                            # Try NSW if not in Sydney
+                            nsw_nodes = self.api.get_nsw_nodes()
+                            node = self._find_best_node_match(nsw_nodes, hex_prefix)
+
+                        if node:
+                            node_name = node.get('adv_name', f'Node {hex_prefix}')
+                            path_parts.append(f"{hex_prefix}: {node_name}")
+                        else:
+                            path_parts.append(f"{hex_prefix}: Unknown")
+
+                    return "\n".join(path_parts)
+                else:
+                    # No cached path - show hop count from message payload
+                    path_len = message.get('path_len', 0)
+                    if path_len == 0 or path_len == 255:
+                        return "📡 Path: Direct"
+                    else:
+                        return f"📡 Path: {path_len} hops"
 
             # Build context with message metadata for Claude to use
             context_parts = []
@@ -969,6 +1116,11 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             if not response:
                 return None
 
+            # Strip response and check if it's empty
+            response = response.strip()
+            if not response or len(response) < 2:
+                return None
+
             # Enforce 280 char limit (safety check)
             if len(response) > 280:
                 response = response[:277] + "..."
@@ -1013,6 +1165,190 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
         except Exception as e:
             logger.error(f"❌ Error sending message: {e}", exc_info=True)
 
+    def _build_channel_map(self, self_info: Optional[Dict] = None):
+        """
+        Build channel map from device info or use fallback defaults.
+
+        Args:
+            self_info: Optional self info from device
+        """
+        # Default channel mapping (fallback if device doesn't provide info)
+        default_channels = {
+            0: 'Public',
+            1: '#sydney',
+            2: '#nsw',
+            3: '#emergency',
+            4: '#nepean',
+            5: '#rolojnr',
+            6: '#test',
+            7: '#jeff'
+        }
+
+        # Try to extract channels from self_info if available
+        if self_info and 'channels' in self_info:
+            channels = self_info['channels']
+            for idx, channel_data in enumerate(channels):
+                if isinstance(channel_data, dict) and 'name' in channel_data:
+                    channel_name = channel_data['name']
+                    self.channel_map[idx] = channel_name
+                    self.channel_name_to_idx[channel_name] = idx
+
+                    # Detect #jeff channel
+                    if channel_name.lower() in ['#jeff', 'jeff']:
+                        self.jeff_channel = idx
+                        logger.info(f"✓ Found #jeff channel at index {idx}")
+
+        # If no channels from device, use defaults
+        if not self.channel_map:
+            logger.warning("⚠️  No channel info from device, using defaults")
+            self.channel_map = default_channels.copy()
+            # Build reverse lookup
+            for idx, name in self.channel_map.items():
+                self.channel_name_to_idx[name] = idx
+
+                # Detect #jeff channel from defaults
+                if name.lower() in ['#jeff', 'jeff']:
+                    self.jeff_channel = idx
+
+        # If still no jeff channel found, search through all channels
+        if self.jeff_channel is None:
+            for idx, name in self.channel_map.items():
+                if 'jeff' in name.lower():
+                    self.jeff_channel = idx
+                    logger.info(f"✓ Found #jeff channel at index {idx}")
+                    break
+
+        # Log the result
+        logger.info(f"📡 Channel map: {self.channel_map}")
+        if self.jeff_channel is not None:
+            logger.info(f"📢 #jeff broadcasts will use channel {self.jeff_channel}")
+        else:
+            logger.warning("⚠️  Could not find #jeff channel - broadcasts disabled")
+
+    def _filter_nodes_by_days(self, nodes: List[Dict], days: int = 7) -> List[Dict]:
+        """Filter nodes seen in the last N days."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        active_nodes = []
+
+        for node in nodes:
+            last_advert = node.get('last_advert')
+            if last_advert:
+                try:
+                    last_dt = datetime.fromisoformat(last_advert.replace('Z', '+00:00'))
+                    if last_dt >= cutoff:
+                        active_nodes.append(node)
+                except:
+                    pass  # Skip nodes with unparseable timestamps
+
+        return active_nodes
+
+    async def broadcast_status(self):
+        """Broadcast network status on #jeff channel."""
+        try:
+            # Ensure we have a jeff channel configured
+            if self.jeff_channel is None:
+                logger.error("❌ Cannot broadcast: #jeff channel not found")
+                return
+
+            # Get current time
+            now = datetime.now()
+            time_str = now.strftime("%I:%M %p").lstrip("0")  # e.g., "6:00 AM"
+
+            # Get network status from API
+            sydney_nodes = self.api.get_sydney_nodes()
+            nsw_nodes = self.api.get_nsw_nodes()
+
+            # Filter to nodes seen in last 7 days
+            sydney_active = self._filter_nodes_by_days(sydney_nodes, days=7)
+            nsw_active = self._filter_nodes_by_days(nsw_nodes, days=7)
+
+            # Count companions (type 1) vs repeaters (type 2), exclude other types
+            sydney_companions = len([n for n in sydney_active if n.get('type') == 1])
+            sydney_repeaters = len([n for n in sydney_active if n.get('type') == 2])
+            nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
+            nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
+
+            # Format status message
+            status_msg = (f"Status @ {time_str}: "
+                         f"Sydney:{sydney_companions}c/{sydney_repeaters}r "
+                         f"NSW:{nsw_companions}c/{nsw_repeaters}r (7d)")
+
+            logger.info(f"📢 Broadcasting scheduled status to channel {self.jeff_channel}: {status_msg}")
+            await self.send_message(status_msg, channel=self.jeff_channel)
+
+        except Exception as e:
+            logger.error(f"❌ Error broadcasting status: {e}", exc_info=True)
+
+    async def scheduled_broadcast_loop(self):
+        """Background task that broadcasts status at 12am, 6am, 12pm, 6pm."""
+        logger.info("🕐 Starting scheduled broadcast loop (12am, 6am, 12pm, 6pm)")
+
+        while True:
+            try:
+                now = datetime.now()
+                current_hour = now.hour
+
+                # Check if we're at a broadcast hour (0, 6, 12, 18)
+                broadcast_hours = [0, 6, 12, 18]
+
+                if current_hour in broadcast_hours:
+                    # Check if we're within the first minute of the hour
+                    if now.minute == 0:
+                        await self.broadcast_status()
+                        # Sleep for 60 seconds to avoid duplicate broadcasts in the same minute
+                        await asyncio.sleep(60)
+
+                # Sleep for 30 seconds before checking again
+                await asyncio.sleep(30)
+
+            except Exception as e:
+                logger.error(f"❌ Error in scheduled broadcast loop: {e}", exc_info=True)
+                await asyncio.sleep(60)  # Wait a minute before retrying
+
+    async def send_to_discord(self, sender: str, message: str, channel_name: str = "unknown", response: str = None):
+        """
+        Send message to Discord webhook.
+
+        Args:
+            sender: Name of the sender
+            message: Original message text
+            channel_name: Channel name (e.g., #sydney)
+            response: Bot's response (if any)
+        """
+        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        if not webhook_url:
+            return  # Silently skip if no webhook configured
+
+        try:
+            # Format the Discord message
+            embed = {
+                "title": f"📡 Message from {sender}",
+                "description": message,
+                "color": 0x5865F2,  # Discord blue
+                "fields": [
+                    {"name": "Channel", "value": channel_name, "inline": True}
+                ],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+            # Add response field if Jeff replied
+            if response:
+                embed["fields"].append({
+                    "name": f"🤖 {self.bot_name} replied",
+                    "value": response,
+                    "inline": False
+                })
+                embed["color"] = 0x57F287  # Green when bot responds
+
+            payload = {"embeds": [embed]}
+
+            # Send to Discord (async)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: requests.post(webhook_url, json=payload, timeout=5))
+
+        except Exception as e:
+            logger.error(f"❌ Error sending to Discord: {e}")
+
     async def handle_channel_message(self, event_data: Dict[str, Any]):
         """
         Handle incoming channel messages.
@@ -1042,10 +1378,8 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             if from_name == 'unknown' and ':' in text:
                 from_name = text.split(':', 1)[0].strip()
 
-            # Log to chat file
-            channel_names = {0: 'Public', 1: '#sydney', 2: '#nsw', 3: '#emergency',
-                           4: '#nepean', 5: '#rolojnr', 6: '#test'}
-            channel_name = channel_names.get(channel, f'ch{channel}')
+            # Log to chat file - use dynamic channel map
+            channel_name = self.channel_map.get(channel, f'ch{channel}')
             chat_logger.info(f"[{channel_name}] {text}")
 
             # Create message dict for process_message with metadata
@@ -1059,6 +1393,17 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
 
             # Single concise log line for received messages
             logger.debug(f"📬 {channel_name} | {from_name} | SNR:{snr} | RSSI:{rssi} | hops:{path_len}")
+
+            # Don't respond to messages from other bots (but still log them above)
+            # Pattern: starts with "ack " or contains hex prefix patterns like "32:", "05:", "f5:"
+            import re
+            hex_pattern = r'\b[0-9a-f]{2}:\s*[^\d]'  # Matches "32: text" but not "32:00" (time)
+            if text.strip().startswith('ack '):
+                logger.info(f"⏭️  Skipping bot ack message from {from_name}")
+                return
+            if re.search(hex_pattern, text.lower()):
+                logger.info(f"⏭️  Skipping bot path response from {from_name}")
+                return
 
             message_dict = {
                 'message': {
@@ -1085,6 +1430,16 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 # Log outgoing message to chat file
                 chat_logger.info(f"[{channel_name}] {full_response}")
                 await self.send_message(full_response, channel)
+
+                # Send to Discord only if from #jeff channel
+                if self.jeff_channel is not None and channel == self.jeff_channel:
+                    await self.send_to_discord(from_name, text, channel_name, response)
+            else:
+                logger.info(f"⏭️  No response generated for message from {from_name}")
+
+                # Still send to Discord even without response (for monitoring) - only #jeff
+                if self.jeff_channel is not None and channel == self.jeff_channel:
+                    await self.send_to_discord(from_name, text, channel_name, None)
 
         except Exception as e:
             logger.error(f"Error handling channel message: {e}", exc_info=True)
@@ -1184,7 +1539,8 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                     if hasattr(event, 'payload'):
                         payload = event.payload
                         count = payload.get('count', payload.get('messages_available', 0))
-                        logger.info(f"📬 MESSAGES WAITING: {count} message(s) available")
+                        if count > 0:
+                            logger.info(f"📬 MESSAGES WAITING: {count} message(s) available")
                     else:
                         logger.info(f"📬 MESSAGES WAITING: {event}")
                 except Exception as e:
@@ -1230,12 +1586,25 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             async def capture_self_info(event):
                 if hasattr(event, 'payload'):
                     startup_info['self_info'] = event.payload
-                    logger.info(f"🤖 SELF INFO: {event.payload}")
+                    payload = event.payload
+
+                    # Log key self info without the full payload
+                    name = payload.get('adv_name', 'Unknown')
+                    pubkey_prefix = payload.get('public_key', '')[:8] if payload.get('public_key') else 'N/A'
+                    logger.info(f"🤖 SELF INFO: {name} ({pubkey_prefix}...)")
+
+                    # Build channel map from self info
+                    self._build_channel_map(event.payload)
 
             async def capture_device_info(event):
                 if hasattr(event, 'payload'):
                     startup_info['device_info'] = event.payload
-                    logger.info(f"📱 DEVICE INFO: {event.payload}")
+                    payload = event.payload
+
+                    # Log key device info without the full payload
+                    device_type = payload.get('device_type', 'Unknown')
+                    firmware = payload.get('firmware_version', 'N/A')
+                    logger.info(f"📱 DEVICE INFO: {device_type} (Firmware: {firmware})")
 
             async def capture_battery(event):
                 if hasattr(event, 'payload'):
@@ -1298,13 +1667,18 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
                 if hasattr(event, 'payload'):
                     contact_list = event.payload
                     startup_info['contacts'] = contact_list
-                    logger.info(f"👥 CONTACTS: {len(contact_list) if isinstance(contact_list, list) else 'N/A'} contacts")
-                    if isinstance(contact_list, list):
-                        for contact in contact_list[:10]:  # Show first 10
-                            name = contact.get('name', contact.get('node_name', 'Unknown'))
-                            logger.info(f"   - {name}")
-                        if len(contact_list) > 10:
-                            logger.info(f"   ... and {len(contact_list) - 10} more")
+
+                    # Just log contact count, not the full details
+                    if isinstance(contact_list, dict):
+                        logger.info(f"👥 CONTACTS: {len(contact_list)} contacts loaded")
+                    elif hasattr(self.meshcore, 'contacts'):
+                        actual_contacts = self.meshcore.contacts
+                        if hasattr(actual_contacts, '__len__'):
+                            logger.info(f"👥 CONTACTS: {len(actual_contacts)} contacts loaded")
+                        else:
+                            logger.info(f"👥 CONTACTS: Loaded")
+                    else:
+                        logger.info(f"👥 CONTACTS: Loaded")
 
             # Subscribe to startup info events
             self.meshcore.subscribe(EventType.SELF_INFO, capture_self_info)
@@ -1322,11 +1696,19 @@ Use Australian/NZ spelling and casual but technical tone. ALWAYS prioritize brev
             except Exception as e:
                 logger.warning(f"Could not query device info: {e}")
 
+            # Build channel map if not already done (fallback)
+            if not self.channel_map:
+                logger.info("Building channel map from defaults...")
+                self._build_channel_map()
+
             logger.info("="*60)
 
             # Start auto message fetching - THIS IS CRITICAL!
             logger.info("Starting auto message fetching...")
             await self.meshcore.start_auto_message_fetching()
+
+            # Start scheduled broadcast background task
+            asyncio.create_task(self.scheduled_broadcast_loop())
 
             logger.info("✓ Bot is now listening for messages (Ctrl+C to stop)")
             logger.info(f"Trigger: '{self.trigger_word}'")
