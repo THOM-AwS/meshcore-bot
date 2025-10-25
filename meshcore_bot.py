@@ -1051,7 +1051,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 triggered = any(word in other_keywords for word in words)
                 is_node_question = any(keyword in msg_part for keyword in node_question_keywords)
                 if not triggered and not is_node_question:
-                    logger.info(f"⏭️  No trigger keyword or node question detected")
+                    logger.info(f"⏭️  No trigger/question from {sender_id}")
                     return None
             else:
                 # On other channels, don't respond unless mentioned by name
@@ -1621,8 +1621,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 if self.jeff_channel is not None and channel == self.jeff_channel:
                     await self.send_to_discord(from_name, text, channel_name, response)
             else:
-                logger.info(f"⏭️  No response generated for message from {from_name}")
-
                 # Still send to Discord even without response (for monitoring) - only #jeff
                 if self.jeff_channel is not None and channel == self.jeff_channel:
                     await self.send_to_discord(from_name, text, channel_name, None)
