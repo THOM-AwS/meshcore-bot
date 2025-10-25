@@ -470,6 +470,74 @@ class MeshCoreBot:
             logger.debug(f"Error looking up node name: {e}")
             return "??"
 
+    async def _get_path_for_test(self, message: Dict, sender_id: str) -> str:
+        """
+        Get path hops in hex format for test command (like Father ROLO).
+        Returns format like: "43,36,49,f5" or "Direct" or "3hops"
+        """
+        try:
+            sender_prefix = message.get('pubkey_prefix', '')
+            path_len_msg = message.get('path_len', 0)
+
+            # Direct connection (path_len = 255)
+            if path_len_msg == 255 or path_len_msg == 0:
+                return "Direct"
+
+            # Get all contacts
+            contacts_result = await self.meshcore.commands.get_contacts()
+            if contacts_result.type != EventType.CONTACTS:
+                return f"{path_len_msg}hops"
+
+            contacts = contacts_result.payload
+
+            # Find sender contact
+            sender_contact = None
+            sender_pubkey = message.get('sender_pubkey', '')
+
+            for key, contact in contacts.items():
+                contact_pubkey = contact.get('public_key', '')
+                # Match by pubkey prefix (first 12 hex chars = 6 bytes)
+                if contact_pubkey[:12] == sender_prefix:
+                    sender_contact = contact
+                    break
+                # Also try matching full pubkey if available
+                if sender_pubkey and contact_pubkey == sender_pubkey:
+                    sender_contact = contact
+                    break
+
+            if not sender_contact:
+                return f"{path_len_msg}hops"
+
+            # Get path from contact
+            out_path = sender_contact.get('out_path', b'')
+            out_path_len = sender_contact.get('out_path_len', -1)
+
+            if out_path_len <= 0:
+                return f"{path_len_msg}hops"
+
+            # Build path string as hex bytes (like Father ROLO)
+            path_hops = []
+            bytes_per_hop = 8 if out_path_len * 8 <= len(out_path) else 6
+
+            for i in range(out_path_len):
+                start = i * bytes_per_hop
+                end = start + bytes_per_hop
+                if end > len(out_path):
+                    break
+
+                node_hash = out_path[start:end]
+                hash_hex = node_hash.hex()[:2]  # First 2 hex chars (1 byte)
+                path_hops.append(hash_hex)
+
+            if path_hops:
+                return ",".join(path_hops)
+            else:
+                return f"{path_len_msg}hops"
+
+        except Exception as e:
+            logger.error(f"Error getting path for test: {e}", exc_info=True)
+            return f"{message.get('path_len', 0)}hops"
+
     async def _get_compact_path(self, message: Dict, sender_id: str) -> str:
         """
         Get compact path in hash:name format with suburbs, sender to receiver.
@@ -1009,58 +1077,12 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     sender_name = text.split(':', 1)[0].strip()
 
                 # Build ack response matching Father ROLO's exact format
-                # Format: ack $(NAME) | $(Hops) | SNR: X dB | RSSI: X dBm | Received at: $(TIME)
+                # Format: ack $(NAME) | $(path hops) | SNR: X dB | RSSI: X dBm | Received at: $(TIME)
                 ack_parts = [f"ack {sender_name}"]
 
-                # Add path/hops - Try to get actual path via CMD_GET_ADVERT_PATH
-                path_len = message.get('path_len', 0)
-                sender_pubkey = message.get('sender_pubkey', '')
-
-                # If no pubkey in payload (channel messages), try to get from MeshCore API
-                if not sender_pubkey or len(sender_pubkey) < 14:
-                    try:
-                        # Look up sender in MeshCore API by node name
-                        sydney_nodes = self.api.get_sydney_nodes()
-                        node = self._find_best_node_match(sydney_nodes, sender_name)
-
-                        if not node:
-                            # Try NSW nodes if not in Sydney
-                            nsw_nodes = self.api.get_nsw_nodes()
-                            node = self._find_best_node_match(nsw_nodes, sender_name)
-
-                        if node and 'public_key' in node:
-                            sender_pubkey = node['public_key']
-                            logger.info(f"🔑 Found {sender_name} pubkey via API: {sender_pubkey[:14]}...")
-                        else:
-                            logger.debug(f"No API node found for {sender_name}")
-                    except Exception as e:
-                        logger.debug(f"Error looking up node in API: {e}")
-
-                # Try to query advert path if we have the sender's public key
-                path_hops = None
-                if sender_pubkey and len(sender_pubkey) >= 14:
-                    try:
-                        path_hops = await self._get_advert_path(sender_pubkey)
-                        if path_hops:
-                            logger.info(f"🛤️  Advert path: {','.join([f'{h:02x}' for h in path_hops])}")
-                        else:
-                            logger.debug(f"No cached advert path for {sender_name}")
-                    except Exception as e:
-                        logger.debug(f"Path query failed: {e}")
-                else:
-                    logger.debug(f"No pubkey available for {sender_name}")
-
-                if path_hops:
-                    # Show actual path as hex bytes
-                    path_str = ','.join([f"{hop:02x}" for hop in path_hops])
-                    ack_parts.append(path_str)
-                elif path_len == 0:
-                    ack_parts.append("Direct")  # 0 hops = neighboring node
-                elif path_len == 0xFF or path_len == 255:
-                    ack_parts.append("Flood")  # Flooded route (no learned path)
-                else:
-                    # Fallback: show hop count for learned routes
-                    ack_parts.append(f"{path_len}hop" if path_len == 1 else f"{path_len}hops")
+                # Get path from contact out_path data
+                path_str = await self._get_path_for_test(message, sender_id)
+                ack_parts.append(path_str)
 
                 # Add SNR
                 snr = message.get('SNR', 'N/A')
