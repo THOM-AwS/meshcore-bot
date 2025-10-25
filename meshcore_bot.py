@@ -346,12 +346,29 @@ class MeshCoreBot:
             if message.webhook_id:
                 return
 
-            # Forward Discord message to MeshCore (public channel by default)
+            # Forward Discord message to MeshCore #jeff channel
             text = f"[Discord] {message.author.display_name}: {message.content}"
             logger.info(f"💬 Discord→MeshCore: {text}")
-            await self.send_message(text, channel=0)
+
+            # Send to #jeff channel if available, otherwise channel 0
+            target_channel = self.jeff_channel if self.jeff_channel is not None else 0
+            await self.send_message(text, channel=target_channel)
 
         return client
+
+    async def _run_discord_bot(self):
+        """Run Discord bot in background for bidirectional sync."""
+        try:
+            # Get Discord bot token from env
+            discord_token = os.getenv('DISCORD_BOT_TOKEN')
+            if not discord_token:
+                logger.error("DISCORD_BOT_TOKEN not set - cannot start Discord bot")
+                return
+
+            logger.info("🚀 Starting Discord bot for bidirectional sync...")
+            await self.discord_client.start(discord_token)
+        except Exception as e:
+            logger.error(f"Discord bot error: {e}", exc_info=True)
 
     async def _get_advert_path(self, pubkey_hex: str) -> Optional[List[int]]:
         """
@@ -1883,6 +1900,10 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             # Start scheduled broadcast background task
             asyncio.create_task(self.scheduled_broadcast_loop())
+
+            # Start Discord bot for bidirectional sync if configured
+            if self.discord_client:
+                asyncio.create_task(self._run_discord_bot())
 
             logger.info("✓ Bot is now listening for messages (Ctrl+C to stop)")
             logger.info(f"Trigger: '{self.trigger_word}'")

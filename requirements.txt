@@ -13,5 +13,8 @@ python-dotenv>=1.0.0
 # HTTP requests for API calls
 requests>=2.31.0
 
+# Discord integration
+discord.py>=2.3.0
+
 # Serial communication (required by meshcore)
 pyserial>=3.5
