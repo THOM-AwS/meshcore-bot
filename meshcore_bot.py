@@ -283,6 +283,7 @@ class MeshCoreBot:
         self.channel_map = {}  # index -> name
         self.channel_name_to_idx = {}  # name -> index
         self.jeff_channel = None  # Will be set during boot
+        self.test_channel = None  # Will be set during boot
 
         # Track recent conversations for follow-up context
         # Format: {sender_id: {'channel': channel, 'timestamp': time, 'last_response': text}}
@@ -936,10 +937,14 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             # Also trigger on node/repeater questions
             node_question_keywords = ['rpt', 'repeater', 'node', 'frequency', 'freq', 'owner', 'owns', 'who']
 
-            # Check channel - Jeff only responds on #jeff channel
+            # Check channel - Jeff responds on #jeff and #test channels
             channel = message.get('channel', 0)
-            # Use dynamically detected jeff channel (fallback to None if not set)
-            allowed_channels = [self.jeff_channel] if self.jeff_channel is not None else []
+            # Use dynamically detected channels
+            allowed_channels = []
+            if self.jeff_channel is not None:
+                allowed_channels.append(self.jeff_channel)
+            if self.test_channel is not None:
+                allowed_channels.append(self.test_channel)
             mention_only_channels = []  # No mention-only channels (was rolojnr)
 
             # Check if this is a follow-up to a recent conversation
@@ -1329,6 +1334,10 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     if channel_name.lower() in ['#jeff', 'jeff']:
                         self.jeff_channel = idx
                         logger.info(f"✓ Found #jeff channel at index {idx}")
+                    # Detect #test channel
+                    if channel_name.lower() in ['#test', 'test']:
+                        self.test_channel = idx
+                        logger.info(f"✓ Found #test channel at index {idx}")
 
         # Try config file as fallback
         if not self.channel_map:
@@ -1345,6 +1354,10 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                         if channel_name.lower() in ['#jeff', 'jeff']:
                             self.jeff_channel = idx
                             logger.info(f"✓ Found #jeff channel at index {idx}")
+                        # Detect #test channel
+                        if channel_name.lower() in ['#test', 'test']:
+                            self.test_channel = idx
+                            logger.info(f"✓ Found #test channel at index {idx}")
 
         # If no channels from device or config, use defaults
         if not self.channel_map:
@@ -1365,7 +1378,9 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 if 'jeff' in name.lower():
                     self.jeff_channel = idx
                     logger.info(f"✓ Found #jeff channel at index {idx}")
-                    break
+                if 'test' in name.lower():
+                    self.test_channel = idx
+                    logger.info(f"✓ Found #test channel at index {idx}")
 
         # Log the result
         logger.info(f"📡 Channel map: {self.channel_map}")
