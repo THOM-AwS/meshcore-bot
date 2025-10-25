@@ -990,6 +990,10 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             logger.info(f"🤖 Processing from {sender_id}: {clean_message}")
 
+            # Check if message is just "jeff" without a question
+            if clean_message in ['jeff', 'jeff?', 'jeff!'] or (not clean_message and triggered):
+                return "muh nameh jeff"
+
             # Handle "test" command - respond with ack similar to other bots
             if any(word in ['test', 't'] for word in words):
                 now = datetime.now().strftime("%H:%M:%S")
