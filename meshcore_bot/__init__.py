@@ -644,8 +644,15 @@ class MeshCoreBot:
                 logger.debug(f"out_path_len <= 0, returning direct path")
                 return f"{sender_part} -> YOU"
 
-            # Build path string
-            path_parts = [sender_part]
+            # Build path string with distances
+            path_parts = []
+
+            # Get sender location
+            sender_pubkey = sender_contact.get('public_key', '')
+            sender_lat, sender_lon = self._get_node_location(sender_pubkey, all_nodes)
+
+            path_parts.append(sender_part)
+            prev_lat, prev_lon = sender_lat, sender_lon
 
             # Parse intermediate nodes (8 bytes per hop for full hash, 6 for short)
             # Determine bytes per hop: if we have enough data for 8 bytes per hop, use 8, else 6
@@ -661,7 +668,7 @@ class MeshCoreBot:
                 node_name = await self._get_node_name_from_hash(node_hash, contacts)
                 hash_prefix = node_hash.hex()[:2]
 
-                # Find full pubkey for this hop to lookup suburb
+                # Find full pubkey for this hop to lookup suburb and location
                 hop_pubkey = None
                 for key, contact in contacts.items():
                     contact_pubkey = contact.get('public_key', '')
@@ -671,9 +678,24 @@ class MeshCoreBot:
 
                 suburb = self._get_node_suburb(hop_pubkey, all_nodes) if hop_pubkey else ""
                 node_part = f"{hash_prefix}:{node_name} {suburb}".strip()
+
+                # Calculate distance from previous hop
+                if hop_pubkey and prev_lat is not None and prev_lon is not None:
+                    hop_lat, hop_lon = self._get_node_location(hop_pubkey, all_nodes)
+                    if hop_lat is not None and hop_lon is not None:
+                        distance = self._calculate_distance(prev_lat, prev_lon, hop_lat, hop_lon)
+                        node_part += f" ({distance:.1f}km)"
+                        prev_lat, prev_lon = hop_lat, hop_lon
+
                 path_parts.append(node_part)
 
-            path_parts.append("YOU")
+            # Add final hop to YOU
+            if prev_lat is not None and prev_lon is not None:
+                # Get bot's own location (from self_info if available)
+                # For now, just show YOU without distance
+                path_parts.append("YOU")
+            else:
+                path_parts.append("YOU")
 
             return " -> ".join(path_parts)
 
@@ -694,6 +716,53 @@ class MeshCoreBot:
                     if suburb:
                         return suburb
         return ""
+
+    def _get_node_location(self, pubkey: str, nodes: list) -> tuple:
+        """
+        Get lat/lon coordinates for a node.
+
+        Returns:
+            Tuple of (lat, lon) or (None, None) if not found
+        """
+        if not pubkey or not nodes:
+            return (None, None)
+
+        for node in nodes:
+            if node.get('public_key') == pubkey:
+                location = node.get('location', {})
+                if isinstance(location, dict):
+                    lat = location.get('latitude')
+                    lon = location.get('longitude')
+                    if lat is not None and lon is not None:
+                        return (lat, lon)
+        return (None, None)
+
+    def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """
+        Calculate distance between two lat/lon points using Haversine formula.
+
+        Returns:
+            Distance in kilometers
+        """
+        from math import radians, sin, cos, sqrt, atan2
+
+        # Earth radius in kilometers
+        R = 6371.0
+
+        # Convert to radians
+        lat1_rad = radians(lat1)
+        lon1_rad = radians(lon1)
+        lat2_rad = radians(lat2)
+        lon2_rad = radians(lon2)
+
+        # Haversine formula
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = sin(dlat / 2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2)**2
+        c = 2 * atan2(sqrt(a), sqrt(1 - a))
+
+        distance = R * c
+        return distance
 
     def _build_system_prompt(self) -> str:
         """Build the system prompt with MeshCore expertise."""
