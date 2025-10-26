@@ -1623,13 +1623,54 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             now = datetime.now()
             time_str = now.strftime("%I:%M %p").lstrip("0")  # e.g., "6:00 AM"
 
+            # Get device contacts
+            device_contacts = {}
+            try:
+                contacts_result = await self.meshcore.commands.get_contacts()
+                if contacts_result.type == EventType.CONTACTS:
+                    device_contacts = contacts_result.payload
+                    logger.info(f"Got {len(device_contacts)} contacts from device")
+            except Exception as e:
+                logger.warning(f"Could not get device contacts: {e}")
+
             # Get network status from API
             sydney_nodes = self.api.get_sydney_nodes()
             nsw_nodes = self.api.get_nsw_nodes()
 
+            # Combine API nodes with device contacts by public key
+            # Build a dict of pubkey -> node data for deduplication
+            combined_nodes = {}
+
+            # Add API nodes first
+            for node in sydney_nodes + nsw_nodes:
+                pubkey = node.get('public_key')
+                if pubkey:
+                    combined_nodes[pubkey] = node
+
+            # Add/update with device contact data
+            for contact_key, contact in device_contacts.items():
+                pubkey = contact.get('public_key', '')
+                if not pubkey:
+                    continue
+
+                # If already in combined_nodes from API, merge the data
+                if pubkey in combined_nodes:
+                    # API data takes precedence for location/type, but update last_advert if contact is newer
+                    contact_advert = contact.get('last_advert')
+                    api_advert = combined_nodes[pubkey].get('last_advert')
+                    if contact_advert and (not api_advert or contact_advert > api_advert):
+                        combined_nodes[pubkey]['last_advert'] = contact_advert
+                else:
+                    # New node not in API, try to determine if it's Sydney/NSW from contact data
+                    # We don't have location, so we can't categorize it - skip for now
+                    pass
+
+            # Convert back to list
+            all_nodes = list(combined_nodes.values())
+
             # Filter to nodes seen in last 7 days
-            sydney_active = self._filter_nodes_by_days(sydney_nodes, days=7)
-            nsw_active = self._filter_nodes_by_days(nsw_nodes, days=7)
+            sydney_active = self._filter_nodes_by_days([n for n in all_nodes if self.api._is_sydney_node(n)], days=7)
+            nsw_active = self._filter_nodes_by_days([n for n in all_nodes if self.api._is_nsw_node(n)], days=7)
 
             # Count companions (type 1) vs repeaters (type 2), exclude other types
             sydney_companions = len([n for n in sydney_active if n.get('type') == 1])
@@ -1642,7 +1683,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                          f"NSW {nsw_companions}/{nsw_repeaters} | "
                          f"Sydney {sydney_companions}/{sydney_repeaters}")
 
-            logger.info(f"📢 Broadcasting scheduled status to channel {self.jeff_channel}: {status_msg}")
+            logger.info(f"📢 Broadcasting: {status_msg} (combined {len(all_nodes)} nodes, {len(device_contacts)} contacts)")
 
             # Log to chat file
             channel_name = self.channel_map.get(self.jeff_channel, f'ch{self.jeff_channel}')
