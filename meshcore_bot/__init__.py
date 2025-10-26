@@ -550,8 +550,10 @@ class MeshCoreBot:
             Path string like "a1:Bob Pyrmont -> 3f:Tower Chatswood -> YOU"
         """
         try:
+            logger.debug(f"_get_compact_path called with message keys: {list(message.keys())}")
             sender_prefix = message.get('pubkey_prefix', '')
             path_len_msg = message.get('path_len', 0)
+            logger.debug(f"sender_prefix: {sender_prefix}, path_len_msg: {path_len_msg}")
 
             # Get all contacts
             contacts_result = await self.meshcore.commands.get_contacts()
@@ -565,14 +567,14 @@ class MeshCoreBot:
             nsw_nodes = self.api.get_nsw_nodes()
             all_nodes = sydney_nodes + nsw_nodes
 
-            # Find sender contact
+            # Find sender contact - try by pubkey prefix first, then by name
             sender_contact = None
             sender_pubkey = message.get('sender_pubkey', '')
 
             for key, contact in contacts.items():
                 contact_pubkey = contact.get('public_key', '')
                 # Match by pubkey prefix (first 12 hex chars = 6 bytes)
-                if contact_pubkey[:12] == sender_prefix:
+                if sender_prefix and contact_pubkey[:12] == sender_prefix:
                     sender_contact = contact
                     break
                 # Also try matching full pubkey if available
@@ -580,8 +582,18 @@ class MeshCoreBot:
                     sender_contact = contact
                     break
 
+            # Fallback: match by advertised name
             if not sender_contact:
-                return f"{sender_prefix[:2]}:{sender_id} -> YOU"
+                for key, contact in contacts.items():
+                    adv_name = contact.get('adv_name', '').lower()
+                    if adv_name == sender_id.lower():
+                        sender_contact = contact
+                        logger.debug(f"Found contact by name: {sender_id}")
+                        break
+
+            if not sender_contact:
+                logger.debug(f"No contact found for sender_id: {sender_id}")
+                return f":{sender_id} -> YOU"
 
             sender_name = sender_contact.get('adv_name', sender_id)
             sender_hash = sender_contact.get('public_key', '')[:2]
@@ -597,8 +609,10 @@ class MeshCoreBot:
             # Get path from contact
             out_path = sender_contact.get('out_path', b'')
             out_path_len = sender_contact.get('out_path_len', -1)
+            logger.debug(f"Contact out_path_len: {out_path_len}, out_path length: {len(out_path)}")
 
             if out_path_len <= 0:
+                logger.debug(f"out_path_len <= 0, returning direct path")
                 return f"{sender_part} -> YOU"
 
             # Build path string
