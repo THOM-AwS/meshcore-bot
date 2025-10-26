@@ -383,6 +383,37 @@ class MeshCoreBot:
             target_channel = self.jeff_channel if self.jeff_channel is not None else 0
             await self.send_message(text, channel=target_channel)
 
+            # ALSO process the message to see if Jeff should respond
+            # Create a message dict similar to what channel messages get
+            message_dict = {
+                'message': {
+                    'text': text,
+                    'from_id': f"[Discord] {message.author.display_name}",
+                    'channel': target_channel,
+                    'id': str(message.id),
+                    'SNR': None,
+                    'RSSI': None,
+                    'path': None,
+                    'path_len': 0,
+                    'channel_idx': target_channel,
+                    'sender_pubkey': '',
+                    'pubkey_prefix': ''
+                }
+            }
+
+            # Process message to generate bot response
+            response = await self.process_message(message_dict)
+
+            # If Jeff generated a response, send it back to Discord AND MeshCore
+            if response:
+                full_response = f"{self.bot_name}: {response}"
+
+                # Send to Discord
+                await message.channel.send(full_response)
+
+                # Send to MeshCore #jeff channel
+                await self.send_message(full_response, channel=target_channel)
+
         return client
 
     async def _run_discord_bot(self):
@@ -579,15 +610,17 @@ class MeshCoreBot:
             Path string like "a1:Bob Pyrmont -> 3f:Tower Chatswood (8.2km) -> Jeff"
         """
         try:
-            logger.debug(f"_get_compact_path called with message keys: {list(message.keys())}")
             sender_prefix = message.get('pubkey_prefix', '')
             path_len_msg = message.get('path_len', 0)
-            logger.debug(f"sender_prefix: {sender_prefix}, path_len_msg: {path_len_msg}")
+            sender_pubkey = message.get('sender_pubkey', '')
+
+            logger.info(f"Path: sender_id='{sender_id}', prefix={sender_prefix}, pubkey={sender_pubkey[:12] if sender_pubkey else 'none'}, path_len={path_len_msg}")
 
             # Get all contacts
             contacts_result = await self.meshcore.commands.get_contacts()
             if contacts_result.type != EventType.CONTACTS:
-                return f"{sender_prefix[:2]}:{sender_id} -> {self.bot_name}"
+                logger.warning(f"Failed to get contacts for path lookup")
+                return f"{sender_prefix[:2] if sender_prefix else ''}:{sender_id} -> {self.bot_name}"
 
             contacts = contacts_result.payload
 
@@ -596,33 +629,68 @@ class MeshCoreBot:
             nsw_nodes = self.api.get_nsw_nodes()
             all_nodes = sydney_nodes + nsw_nodes
 
-            # Find sender contact - try by pubkey prefix first, then by name
+            # Find sender contact - try multiple methods
             sender_contact = None
-            sender_pubkey = message.get('sender_pubkey', '')
 
-            for key, contact in contacts.items():
-                contact_pubkey = contact.get('public_key', '')
-                # Match by pubkey prefix (first 12 hex chars = 6 bytes)
-                if sender_prefix and contact_pubkey[:12] == sender_prefix:
-                    sender_contact = contact
-                    break
-                # Also try matching full pubkey if available
-                if sender_pubkey and contact_pubkey == sender_pubkey:
-                    sender_contact = contact
-                    break
+            logger.info(f"Path lookup: Searching for sender '{sender_id}' in {len(contacts)} contacts")
 
-            # Fallback: match by advertised name
-            if not sender_contact:
+            # Method 1: Match by full pubkey if available
+            if sender_pubkey:
+                logger.info(f"Trying method 1: Full pubkey match ({sender_pubkey[:16]}...)")
                 for key, contact in contacts.items():
-                    adv_name = contact.get('adv_name', '').lower()
-                    if adv_name == sender_id.lower():
+                    if contact.get('public_key', '') == sender_pubkey:
                         sender_contact = contact
-                        logger.debug(f"Found contact by name: {sender_id}")
+                        logger.info(f"✓ Found contact by full pubkey: {contact.get('adv_name', 'unknown')}")
+                        break
+                if not sender_contact:
+                    logger.info(f"✗ No match by full pubkey")
+
+            # Method 2: Match by pubkey prefix (first 12 hex chars = 6 bytes)
+            if not sender_contact and sender_prefix:
+                logger.info(f"Trying method 2: Pubkey prefix match ({sender_prefix})")
+                for key, contact in contacts.items():
+                    contact_pubkey = contact.get('public_key', '')
+                    if contact_pubkey.startswith(sender_prefix):
+                        sender_contact = contact
+                        logger.info(f"✓ Found contact by prefix: {contact.get('adv_name', 'unknown')}")
+                        break
+                if not sender_contact:
+                    logger.info(f"✗ No match by pubkey prefix")
+
+            # Method 3: Fallback to advertised name matching (strip emojis and compare)
+            if not sender_contact:
+                # Clean sender_id by removing emojis and extra whitespace
+                import re
+                cleaned_sender = re.sub(r'[^\x00-\x7F]+', '', sender_id).strip()
+                logger.info(f"Trying method 3: Name match - cleaned sender: '{cleaned_sender}'")
+
+                # Log first 5 contacts for debugging
+                logger.info(f"Sample of contact names (first 5):")
+                for i, (key, contact) in enumerate(list(contacts.items())[:5]):
+                    adv_name = contact.get('adv_name', '')
+                    cleaned = re.sub(r'[^\x00-\x7F]+', '', adv_name).strip()
+                    logger.info(f"  Contact {i+1}: adv_name='{adv_name}' cleaned='{cleaned}'")
+
+                for key, contact in contacts.items():
+                    adv_name = contact.get('adv_name', '')
+                    cleaned_contact = re.sub(r'[^\x00-\x7F]+', '', adv_name).strip()
+
+                    if cleaned_contact.lower() == cleaned_sender.lower():
+                        sender_contact = contact
+                        logger.info(f"✓ Found contact by cleaned name: original='{adv_name}' cleaned='{cleaned_contact}'")
                         break
 
+                if not sender_contact:
+                    logger.info(f"✗ No match by cleaned name")
+
             if not sender_contact:
-                logger.debug(f"No contact found for sender_id: {sender_id}")
+                import re
+                cleaned_debug = re.sub(r'[^\x00-\x7F]+', '', sender_id).strip()
+                logger.warning(f"❌ FAILED: No contact found for sender_id: '{sender_id}', prefix: '{sender_prefix}'")
+                logger.warning(f"Debug info: pubkey={sender_pubkey[:16] if sender_pubkey else 'none'}, cleaned='{cleaned_debug}'")
                 return f":{sender_id} -> {self.bot_name}"
+
+            logger.info(f"✓ SUCCESS: Found sender contact: {sender_contact.get('adv_name', 'unknown')}")
 
             sender_name = sender_contact.get('adv_name', sender_id)
             sender_hash = sender_contact.get('public_key', '')[:2]
@@ -638,10 +706,13 @@ class MeshCoreBot:
             # Get path from contact
             out_path = sender_contact.get('out_path', b'')
             out_path_len = sender_contact.get('out_path_len', -1)
-            logger.debug(f"Contact out_path_len: {out_path_len}, out_path length: {len(out_path)}")
+
+            logger.info(f"Path data: out_path_len={out_path_len}, out_path bytes={len(out_path)}, path_len_msg={path_len_msg}")
+            if out_path:
+                logger.info(f"Path data hex: {out_path.hex()[:64]}...")  # First 64 chars of hex
 
             if out_path_len <= 0:
-                logger.debug(f"out_path_len <= 0, returning direct path")
+                logger.info(f"Direct path (out_path_len={out_path_len})")
                 return f"{sender_part} -> {self.bot_name}"
 
             # Build path string with distances
@@ -1791,7 +1862,8 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     'path': payload.get('path'),
                     'path_len': payload.get('path_len'),
                     'channel_idx': payload.get('channel_idx'),
-                    'sender_pubkey': sender_pubkey
+                    'sender_pubkey': sender_pubkey,
+                    'pubkey_prefix': payload.get('pubkey_prefix', '')
                 }
             }
 
