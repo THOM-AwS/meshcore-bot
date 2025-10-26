@@ -1395,7 +1395,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
         # Try to extract channels from self_info/device query first (most reliable)
         if self_info and 'channels' in self_info:
-            logger.info("✅ Using channel configuration from device")
             channels = self_info['channels']
             for idx, channel_data in enumerate(channels):
                 if isinstance(channel_data, dict) and 'name' in channel_data:
@@ -1406,19 +1405,14 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     # Detect #jeff channel
                     if channel_name.lower() in ['#jeff', 'jeff']:
                         self.jeff_channel = idx
-                        logger.info(f"✓ Found #jeff channel at index {idx}")
                     # Detect #test channel
                     if channel_name.lower() in ['#test', 'test']:
                         self.test_channel = idx
-                        logger.info(f"✓ Found #test channel at index {idx}")
-            # Device channels loaded successfully - skip config file and defaults
-            logger.info(f"📡 Loaded {len(self.channel_map)} channels from device")
 
         # Try config file as fallback (only if device didn't provide channels)
         elif not self.channel_map:
             config = self._load_channel_config()
             if config and 'channels' in config:
-                logger.info("✅ Using channel configuration from config file")
                 for idx, channel_data in enumerate(config['channels']):
                     if isinstance(channel_data, dict) and 'name' in channel_data:
                         channel_name = channel_data['name']
@@ -1428,17 +1422,13 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                         # Detect #jeff channel
                         if channel_name.lower() in ['#jeff', 'jeff']:
                             self.jeff_channel = idx
-                            logger.info(f"✓ Found #jeff channel at index {idx}")
                         # Detect #test channel
                         if channel_name.lower() in ['#test', 'test']:
                             self.test_channel = idx
-                            logger.info(f"✓ Found #test channel at index {idx}")
-                logger.info(f"📡 Loaded {len(self.channel_map)} channels from config file")
 
         # If no channels from device or config, use defaults (last resort)
         if not self.channel_map:
-            logger.warning("⚠️  No channels from device or config file, using hardcoded defaults")
-            logger.warning("⚠️  To configure channels, export your device config and save channels to ~/.meshcore_channels.json")
+            logger.warning("No channels from device or config, using defaults")
             self.channel_map = default_channels.copy()
             # Build reverse lookup
             for idx, name in self.channel_map.items():
@@ -1447,31 +1437,25 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 # Detect #jeff channel from defaults
                 if name.lower() in ['#jeff', 'jeff']:
                     self.jeff_channel = idx
-                    logger.info(f"✓ Using default #jeff channel at index {idx}")
                 if name.lower() in ['#test', 'test']:
                     self.test_channel = idx
-                    logger.info(f"✓ Using default #test channel at index {idx}")
 
         # Final fallback: search for jeff/test keywords in channel names
         if self.jeff_channel is None:
             for idx, name in self.channel_map.items():
                 if 'jeff' in name.lower():
                     self.jeff_channel = idx
-                    logger.info(f"✓ Found #jeff channel by keyword search at index {idx}")
                     break
         if self.test_channel is None:
             for idx, name in self.channel_map.items():
                 if 'test' in name.lower():
                     self.test_channel = idx
-                    logger.info(f"✓ Found #test channel by keyword search at index {idx}")
                     break
 
-        # Log the result
-        logger.info(f"📡 Channel map: {self.channel_map}")
-        if self.jeff_channel is not None:
-            logger.info(f"📢 #jeff broadcasts will use channel {self.jeff_channel}")
-        else:
-            logger.warning("⚠️  Could not find #jeff channel - broadcasts disabled")
+        # Log compact summary
+        jeff_ch = f"jeff={self.jeff_channel}" if self.jeff_channel is not None else "no-jeff"
+        test_ch = f"test={self.test_channel}" if self.test_channel is not None else "no-test"
+        logger.info(f"Channels: {len(self.channel_map)} loaded | {jeff_ch} | {test_ch}")
 
     def _filter_nodes_by_days(self, nodes: List[Dict], days: int = 7) -> List[Dict]:
         """Filter nodes seen in the last N days."""
@@ -2025,7 +2009,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
                 # Query channels directly from device using get_channel()
                 if hasattr(self.meshcore.commands, 'get_channel'):
-                    logger.info("Querying channels from device...")
                     channels_data = []
 
                     # Query up to 16 channels (typical max)
@@ -2045,7 +2028,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                                     'name': name,
                                     'secret': secret.hex() if secret else ''
                                 })
-                                logger.info(f"  Channel {i}: {name}")
                             else:
                                 # No more channels
                                 break
@@ -2054,11 +2036,10 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                             # Channel not configured or end of channels
                             break
                         except Exception as e:
-                            logger.debug(f"  Channel {i}: {e}")
+                            logger.debug(f"Channel {i} query failed: {e}")
                             break
 
                     if channels_data:
-                        logger.info(f"✓ Loaded {len(channels_data)} channels from device")
                         self._build_channel_map({'channels': channels_data})
 
                 # Give events time to arrive
