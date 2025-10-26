@@ -117,11 +117,14 @@ class BroadcastScheduler:
 
                 # Check if we're at a broadcast hour
                 if current_hour in self.broadcast_hours:
-                    # Check if we're within the first minute of the hour
-                    if now.minute == 0:
+                    # Check if we're within the first 2 minutes of the hour (more tolerant window)
+                    if now.minute < 2:
                         await self.broadcast_status()
-                        # Sleep for 60 seconds to avoid duplicate broadcasts in the same minute
-                        await asyncio.sleep(60)
+                        # Sleep until the next hour to avoid duplicate broadcasts
+                        # Calculate seconds until next hour
+                        seconds_until_next_hour = 3600 - (now.minute * 60 + now.second)
+                        await asyncio.sleep(seconds_until_next_hour)
+                        continue
 
                 # Sleep for 30 seconds before checking again
                 await asyncio.sleep(30)

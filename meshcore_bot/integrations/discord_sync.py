@@ -2,7 +2,7 @@
 import logging
 import asyncio
 from typing import Optional, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import discord
 import requests
@@ -123,7 +123,7 @@ class DiscordSync:
                 "fields": [
                     {"name": "Channel", "value": channel_name, "inline": True}
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
 
             # Add response field if Jeff replied

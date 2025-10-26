@@ -1,4 +1,13 @@
-"""Unified message sender for MeshCore bot."""
+"""
+Unified message sender for MeshCore bot.
+
+NOTE: This module is currently not used by the main bot implementation.
+The MeshCoreBot class uses direct calls to meshcore.commands.send_chan_msg()
+and meshcore.commands.send_contact_msg() instead.
+
+This module is kept for future refactoring or as a reference implementation
+for a cleaner message sending abstraction layer.
+"""
 import logging
 from typing import Optional
 from enum import Enum

@@ -132,6 +132,7 @@ class MeshCoreAPI:
         self._cache_time = None
         self._sydney_cache = None
         self._nsw_cache = None
+        self._fetching = False  # Flag to prevent duplicate fetches
 
     def _is_cache_valid(self) -> bool:
         """Check if cache is still valid."""
@@ -163,25 +164,43 @@ class MeshCoreAPI:
         return (self.NSW_BOUNDS['lat_min'] <= lat <= self.NSW_BOUNDS['lat_max'] and
                 self.NSW_BOUNDS['lon_min'] <= lon <= self.NSW_BOUNDS['lon_max'])
 
-    def get_nodes(self, prefer_nsw: bool = True) -> List[Dict]:
+    def get_nodes(self, nsw_first: bool = True) -> List[Dict]:
         """
         Fetch nodes from the map API with caching.
 
         Args:
-            prefer_nsw: If True, return NSW nodes first, then rest of world
+            nsw_first: If True, return NSW nodes first in the list (for prioritized searching)
 
         Returns:
-            List of node dictionaries
+            List of node dictionaries (NSW nodes first if nsw_first=True, otherwise all nodes)
         """
         # Return cached data if valid
         if self._is_cache_valid():
             logger.debug("Using cached node data")
-            if prefer_nsw and self._nsw_cache is not None:
-                return self._nsw_cache + [n for n in self._cache if not self._is_nsw_node(n)]
+            if nsw_first and self._nsw_cache is not None:
+                # Return NSW nodes first, then non-NSW nodes
+                non_nsw = [n for n in self._cache if not self._is_nsw_node(n)]
+                return self._nsw_cache + non_nsw
             return self._cache
+
+        # Prevent duplicate fetches
+        if self._fetching:
+            logger.debug("API fetch already in progress, waiting...")
+            import time
+            # Wait briefly for the other fetch to complete
+            for _ in range(10):  # Wait up to 1 second
+                time.sleep(0.1)
+                if self._is_cache_valid():
+                    return self._cache if not nsw_first else self._nsw_cache + [n for n in self._cache if not self._is_nsw_node(n)]
+            # If still not valid, use stale cache
+            if self._cache:
+                logger.warning("Using stale cache - concurrent fetch did not complete")
+                return self._cache
+            return []
 
         # Fetch fresh data
         try:
+            self._fetching = True
             logger.info("Fetching nodes from API (cache expired)")
             response = requests.get(f"{self.base_url}/nodes", timeout=10)
             response.raise_for_status()
@@ -196,9 +215,10 @@ class MeshCoreAPI:
 
             logger.info(f"Cached {len(self._cache)} nodes ({len(self._sydney_cache)} in Sydney, {len(self._nsw_cache)} in NSW)")
 
-            if prefer_nsw:
-                # Return NSW nodes first, then rest
-                return self._nsw_cache + [n for n in self._cache if not self._is_nsw_node(n)]
+            if nsw_first:
+                # Return NSW nodes first, then non-NSW nodes
+                non_nsw = [n for n in self._cache if not self._is_nsw_node(n)]
+                return self._nsw_cache + non_nsw
 
             return self._cache
 
@@ -209,6 +229,8 @@ class MeshCoreAPI:
                 logger.warning("Using stale cache due to API error")
                 return self._cache
             return []
+        finally:
+            self._fetching = False
 
     def get_sydney_nodes(self) -> List[Dict]:
         """Get only Greater Sydney nodes (uses cache if available)."""
@@ -266,6 +288,7 @@ class MeshCoreBot:
 
         # Track processed message IDs to avoid duplicates
         self.processed_messages = set()
+        self._processed_messages_lock = asyncio.Lock()
 
         # Track last battery level for 10% threshold detection
         self.last_battery_level = None
@@ -293,13 +316,18 @@ class MeshCoreBot:
         # Discord bot for two-way mirroring
         self.discord_client = None
         self.discord_channel_id = None
+        self.discord_webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
         if DISCORD_AVAILABLE:
             discord_token = os.getenv('DISCORD_BOT_TOKEN')
             discord_channel_id = os.getenv('DISCORD_CHANNEL_ID')
             if discord_token and discord_channel_id:
-                self.discord_channel_id = int(discord_channel_id)
-                self.discord_client = self._init_discord_client(discord_token)
-                logger.info(f"✅ Discord bot enabled for channel {discord_channel_id}")
+                try:
+                    self.discord_channel_id = int(discord_channel_id)
+                    self.discord_client = self._init_discord_client(discord_token)
+                    logger.info(f"✅ Discord bot enabled for channel {discord_channel_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize Discord bot: {e}")
+                    self.discord_client = None
             else:
                 logger.info("ℹ️  Discord bot not configured (webhook-only mode)")
         else:
@@ -517,7 +545,8 @@ class MeshCoreBot:
 
             # Build path string as hex bytes (like Father ROLO)
             path_hops = []
-            bytes_per_hop = 8 if out_path_len * 8 <= len(out_path) else 6
+            # Determine bytes per hop: if we have enough data for 8 bytes per hop, use 8, else 6
+            bytes_per_hop = 8 if len(out_path) >= out_path_len * 8 else 6
 
             for i in range(out_path_len):
                 start = i * bytes_per_hop
@@ -619,7 +648,8 @@ class MeshCoreBot:
             path_parts = [sender_part]
 
             # Parse intermediate nodes (8 bytes per hop for full hash, 6 for short)
-            bytes_per_hop = 8 if out_path_len * 8 <= len(out_path) else 6
+            # Determine bytes per hop: if we have enough data for 8 bytes per hop, use 8, else 6
+            bytes_per_hop = 8 if len(out_path) >= out_path_len * 8 else 6
 
             for i in range(out_path_len):
                 start = i * bytes_per_hop
@@ -976,16 +1006,17 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             if not text:
                 return None
 
-            # Avoid processing same message twice
-            if message_id and message_id in self.processed_messages:
-                logger.info(f"⏭️  Already processed message: {message_id}")
-                return None
-
+            # Avoid processing same message twice (atomic check-and-add)
             if message_id:
-                self.processed_messages.add(message_id)
-                # Keep set size manageable
-                if len(self.processed_messages) > 100:
-                    self.processed_messages = set(list(self.processed_messages)[-50:])
+                async with self._processed_messages_lock:
+                    if message_id in self.processed_messages:
+                        logger.info(f"⏭️  Already processed message: {message_id}")
+                        return None
+
+                    self.processed_messages.add(message_id)
+                    # Keep set size manageable
+                    if len(self.processed_messages) > 100:
+                        self.processed_messages = set(list(self.processed_messages)[-50:])
 
             # Store in history
             self.message_history.append({
@@ -1034,6 +1065,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             import time
             current_time = time.time()
             is_followup = False
+            expired_sender = None
 
             if sender_id in self.recent_conversations:
                 conv = self.recent_conversations[sender_id]
@@ -1043,8 +1075,12 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     is_followup = True
                     logger.info(f"💬 Follow-up detected from {sender_id} ({time_diff:.0f}s ago)")
                 else:
-                    # Clean up expired conversation
-                    del self.recent_conversations[sender_id]
+                    # Mark for cleanup (don't delete during dict iteration)
+                    expired_sender = sender_id
+
+            # Clean up expired conversation outside of the check
+            if expired_sender:
+                del self.recent_conversations[expired_sender]
 
             # Determine if we should respond
             triggered = False
@@ -1359,7 +1395,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
         # Try to extract channels from self_info/device query first (most reliable)
         if self_info and 'channels' in self_info:
-            logger.info("Using channel configuration from device")
+            logger.info("✅ Using channel configuration from device")
             channels = self_info['channels']
             for idx, channel_data in enumerate(channels):
                 if isinstance(channel_data, dict) and 'name' in channel_data:
@@ -1375,12 +1411,14 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     if channel_name.lower() in ['#test', 'test']:
                         self.test_channel = idx
                         logger.info(f"✓ Found #test channel at index {idx}")
+            # Device channels loaded successfully - skip config file and defaults
+            logger.info(f"📡 Loaded {len(self.channel_map)} channels from device")
 
-        # Try config file as fallback
-        if not self.channel_map:
+        # Try config file as fallback (only if device didn't provide channels)
+        elif not self.channel_map:
             config = self._load_channel_config()
             if config and 'channels' in config:
-                logger.info("Using channel configuration from config file")
+                logger.info("✅ Using channel configuration from config file")
                 for idx, channel_data in enumerate(config['channels']):
                     if isinstance(channel_data, dict) and 'name' in channel_data:
                         channel_name = channel_data['name']
@@ -1395,10 +1433,11 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                         if channel_name.lower() in ['#test', 'test']:
                             self.test_channel = idx
                             logger.info(f"✓ Found #test channel at index {idx}")
+                logger.info(f"📡 Loaded {len(self.channel_map)} channels from config file")
 
-        # If no channels from device or config, use defaults
+        # If no channels from device or config, use defaults (last resort)
         if not self.channel_map:
-            logger.warning("⚠️  No channels from device or config file, using defaults")
+            logger.warning("⚠️  No channels from device or config file, using hardcoded defaults")
             logger.warning("⚠️  To configure channels, export your device config and save channels to ~/.meshcore_channels.json")
             self.channel_map = default_channels.copy()
             # Build reverse lookup
@@ -1408,16 +1447,24 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 # Detect #jeff channel from defaults
                 if name.lower() in ['#jeff', 'jeff']:
                     self.jeff_channel = idx
+                    logger.info(f"✓ Using default #jeff channel at index {idx}")
+                if name.lower() in ['#test', 'test']:
+                    self.test_channel = idx
+                    logger.info(f"✓ Using default #test channel at index {idx}")
 
-        # If still no jeff channel found, search through all channels
+        # Final fallback: search for jeff/test keywords in channel names
         if self.jeff_channel is None:
             for idx, name in self.channel_map.items():
                 if 'jeff' in name.lower():
                     self.jeff_channel = idx
-                    logger.info(f"✓ Found #jeff channel at index {idx}")
+                    logger.info(f"✓ Found #jeff channel by keyword search at index {idx}")
+                    break
+        if self.test_channel is None:
+            for idx, name in self.channel_map.items():
                 if 'test' in name.lower():
                     self.test_channel = idx
-                    logger.info(f"✓ Found #test channel at index {idx}")
+                    logger.info(f"✓ Found #test channel by keyword search at index {idx}")
+                    break
 
         # Log the result
         logger.info(f"📡 Channel map: {self.channel_map}")
@@ -1524,8 +1571,8 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             channel_name: Channel name (e.g., #sydney)
             response: Bot's response (if any)
         """
-        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
-        if not webhook_url:
+        # Check if Discord webhook is configured
+        if not self.discord_webhook_url:
             return  # Silently skip if no webhook configured
 
         try:
@@ -1537,7 +1584,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 "fields": [
                     {"name": "Channel", "value": channel_name, "inline": True}
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
 
             # Add response field if Jeff replied
@@ -1553,10 +1600,79 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             # Send to Discord (async)
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: requests.post(webhook_url, json=payload, timeout=5))
+            await loop.run_in_executor(None, lambda: requests.post(self.discord_webhook_url, json=payload, timeout=5))
 
         except Exception as e:
             logger.error(f"❌ Error sending to Discord: {e}")
+
+    async def handle_contact_message(self, event_data: Dict[str, Any]):
+        """
+        Handle incoming direct/contact messages.
+
+        Args:
+            event_data: Event data from MeshCore
+        """
+        try:
+            # Extract from event.payload
+            if hasattr(event_data, 'payload'):
+                payload = event_data.payload
+            elif isinstance(event_data, dict) and 'payload' in event_data:
+                payload = event_data['payload']
+            else:
+                payload = event_data
+
+            text = payload.get('text', '').strip()
+            from_name = payload.get('from_name', payload.get('pubkey_prefix', 'unknown'))
+
+            if not text:
+                return
+
+            # Extract sender from message text if available
+            if from_name == 'unknown' and ':' in text:
+                from_name = text.split(':', 1)[0].strip()
+
+            # Log direct message
+            chat_logger.info(f"[DM] {from_name}: {text}")
+
+            # For direct messages, always respond (no channel filtering)
+            # Create message dict - note: DMs don't have channel info
+            snr = payload.get('SNR', payload.get('snr', self.last_rx_snr))
+            rssi = payload.get('RSSI', payload.get('rssi', self.last_rx_rssi))
+            sender_pubkey = payload.get('pubkey', payload.get('sender_pubkey', payload.get('from_pubkey', payload.get('pubkey_prefix', ''))))
+
+            logger.debug(f"📬 DM | {from_name} | SNR:{snr} | RSSI:{rssi}")
+
+            message_dict = {
+                'message': {
+                    'text': text,
+                    'from_id': from_name,
+                    'channel': None,  # Direct messages don't have channels
+                    'id': payload.get('id', ''),
+                    'SNR': snr,
+                    'RSSI': rssi,
+                    'path': payload.get('path'),
+                    'path_len': payload.get('path_len'),
+                    'sender_pubkey': sender_pubkey
+                }
+            }
+
+            # Process message
+            response = await self.process_message(message_dict)
+
+            if response:
+                # Send DM response back to sender
+                full_response = f"{self.bot_name}: {response}"
+                chat_logger.info(f"[DM] {full_response}")
+
+                # Send direct message back (requires pubkey)
+                if sender_pubkey:
+                    try:
+                        await self.meshcore.commands.send_contact_msg(sender_pubkey, full_response)
+                    except Exception as e:
+                        logger.error(f"Failed to send DM to {from_name}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error handling contact message: {e}", exc_info=True)
 
     async def handle_channel_message(self, event_data: Dict[str, Any]):
         """
@@ -1606,7 +1722,9 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             # Don't respond to messages from other bots (but still log them above)
             # Pattern: starts with "ack " or contains hex prefix patterns like "32:", "05:", "f5:"
             import re
-            hex_pattern = r'\b[0-9a-f]{2}:\s*[^\d]'  # Matches "32: text" but not "32:00" (time)
+            # More specific pattern: hex:word format with arrow after (path format)
+            # Matches "32:Tower -> 05:Node" but not "af: hello" or "12:30" (time)
+            hex_pattern = r'\b[0-9a-f]{2}:[A-Za-z]+.*->'
             if text.strip().startswith('ack '):
                 logger.info(f"⏭️  Skipping bot ack message from {from_name}")
                 return
@@ -1680,7 +1798,7 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             async def on_contact_msg(event):
                 try:
-                    await self.handle_channel_message(event)
+                    await self.handle_contact_message(event)
                 except Exception as e:
                     logger.error(f"Error in on_contact_msg: {e}", exc_info=True)
 
@@ -2006,9 +2124,18 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             logger.error(f"Fatal error: {e}", exc_info=True)
             raise
         finally:
+            # Clean up MeshCore connection
             if self.meshcore:
                 await self.meshcore.disconnect()
                 logger.info("Disconnected from MeshCore device")
+
+            # Clean up Discord bot connection
+            if self.discord_client and not self.discord_client.is_closed():
+                try:
+                    await self.discord_client.close()
+                    logger.info("Disconnected from Discord")
+                except Exception as e:
+                    logger.warning(f"Error closing Discord connection: {e}")
 
 
 async def main():
