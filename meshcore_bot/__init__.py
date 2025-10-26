@@ -569,14 +569,14 @@ class MeshCoreBot:
 
     async def _get_compact_path(self, message: Dict, sender_id: str) -> str:
         """
-        Get compact path in hash:name format with suburbs, sender to receiver.
+        Get compact path in hash:name format with suburbs and distances, sender to receiver.
 
         Args:
             message: Message dict with path info
             sender_id: Sender identifier
 
         Returns:
-            Path string like "a1:Bob Pyrmont -> 3f:Tower Chatswood -> YOU"
+            Path string like "a1:Bob Pyrmont -> 3f:Tower Chatswood (8.2km) -> Jeff"
         """
         try:
             logger.debug(f"_get_compact_path called with message keys: {list(message.keys())}")
@@ -587,7 +587,7 @@ class MeshCoreBot:
             # Get all contacts
             contacts_result = await self.meshcore.commands.get_contacts()
             if contacts_result.type != EventType.CONTACTS:
-                return f"{sender_prefix[:2]}:{sender_id} -> YOU"
+                return f"{sender_prefix[:2]}:{sender_id} -> {self.bot_name}"
 
             contacts = contacts_result.payload
 
@@ -622,7 +622,7 @@ class MeshCoreBot:
 
             if not sender_contact:
                 logger.debug(f"No contact found for sender_id: {sender_id}")
-                return f":{sender_id} -> YOU"
+                return f":{sender_id} -> {self.bot_name}"
 
             sender_name = sender_contact.get('adv_name', sender_id)
             sender_hash = sender_contact.get('public_key', '')[:2]
@@ -633,7 +633,7 @@ class MeshCoreBot:
 
             # Direct connection (path_len = 255)
             if path_len_msg == 255 or path_len_msg == 0:
-                return f"{sender_part} -> YOU"
+                return f"{sender_part} -> {self.bot_name}"
 
             # Get path from contact
             out_path = sender_contact.get('out_path', b'')
@@ -642,7 +642,7 @@ class MeshCoreBot:
 
             if out_path_len <= 0:
                 logger.debug(f"out_path_len <= 0, returning direct path")
-                return f"{sender_part} -> YOU"
+                return f"{sender_part} -> {self.bot_name}"
 
             # Build path string with distances
             path_parts = []
@@ -689,19 +689,14 @@ class MeshCoreBot:
 
                 path_parts.append(node_part)
 
-            # Add final hop to YOU
-            if prev_lat is not None and prev_lon is not None:
-                # Get bot's own location (from self_info if available)
-                # For now, just show YOU without distance
-                path_parts.append("YOU")
-            else:
-                path_parts.append("YOU")
+            # Add final hop to bot (receiver)
+            path_parts.append(self.bot_name)
 
             return " -> ".join(path_parts)
 
         except Exception as e:
             logger.error(f"Error building compact path: {e}", exc_info=True)
-            return f"{sender_id} -> YOU"
+            return f"{sender_id} -> {self.bot_name}"
 
     def _get_node_suburb(self, pubkey: str, nodes: list) -> str:
         """Look up suburb from API nodes based on public key."""
