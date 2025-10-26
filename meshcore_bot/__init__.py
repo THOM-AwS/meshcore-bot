@@ -657,31 +657,33 @@ class MeshCoreBot:
                 if not sender_contact:
                     logger.info(f"✗ No match by pubkey prefix")
 
-            # Method 3: Fallback to advertised name matching (strip emojis and compare)
+            # Method 3: Fallback to advertised name matching (exact match including emojis)
             if not sender_contact:
-                # Clean sender_id by removing emojis and extra whitespace
-                import re
-                cleaned_sender = re.sub(r'[^\x00-\x7F]+', '', sender_id).strip()
-                logger.info(f"Trying method 3: Name match - cleaned sender: '{cleaned_sender}'")
+                logger.info(f"Trying method 3: Name match - looking for: '{sender_id}'")
 
                 # Log first 5 contacts for debugging
                 logger.info(f"Sample of contact names (first 5):")
                 for i, (key, contact) in enumerate(list(contacts.items())[:5]):
                     adv_name = contact.get('adv_name', '')
-                    cleaned = re.sub(r'[^\x00-\x7F]+', '', adv_name).strip()
-                    logger.info(f"  Contact {i+1}: adv_name='{adv_name}' cleaned='{cleaned}'")
+                    logger.info(f"  Contact {i+1}: adv_name='{adv_name}'")
 
                 for key, contact in contacts.items():
                     adv_name = contact.get('adv_name', '')
-                    cleaned_contact = re.sub(r'[^\x00-\x7F]+', '', adv_name).strip()
 
-                    if cleaned_contact.lower() == cleaned_sender.lower():
+                    # Try exact match first (case-insensitive, preserving emojis)
+                    if adv_name.lower() == sender_id.lower():
                         sender_contact = contact
-                        logger.info(f"✓ Found contact by cleaned name: original='{adv_name}' cleaned='{cleaned_contact}'")
+                        logger.info(f"✓ Found contact by exact name: '{adv_name}'")
+                        break
+
+                    # Try stripped match (remove leading/trailing whitespace)
+                    if adv_name.strip().lower() == sender_id.strip().lower():
+                        sender_contact = contact
+                        logger.info(f"✓ Found contact by stripped name: '{adv_name}'")
                         break
 
                 if not sender_contact:
-                    logger.info(f"✗ No match by cleaned name")
+                    logger.info(f"✗ No match by name")
 
             if not sender_contact:
                 import re
