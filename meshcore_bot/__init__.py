@@ -1468,6 +1468,9 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             await self.send_message(status_msg, channel=self.jeff_channel)
 
+            # Send to Discord as well
+            await self.send_to_discord(self.bot_name, status_msg, channel_name, None)
+
         except Exception as e:
             logger.error(f"❌ Error broadcasting status: {e}", exc_info=True)
 
