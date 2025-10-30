@@ -387,8 +387,12 @@ class MeshCoreBot:
             text = f"[Discord] {message.author.display_name}: {message.content}"
             logger.info(f"💬 Discord→MeshCore: {text}")
 
-            # Send to #jeff channel if available, otherwise channel 0
+            # Log to chat file
             target_channel = self.jeff_channel if self.jeff_channel is not None else 0
+            channel_name = self.channel_map.get(target_channel, f'ch{target_channel}')
+            chat_logger.info(f"[{channel_name}] {text}")
+
+            # Send to #jeff channel if available, otherwise channel 0
             await self.send_message(text, channel=target_channel)
 
             # ALSO process the message to see if Jeff should respond
