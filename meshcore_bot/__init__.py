@@ -1280,57 +1280,31 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
                 return "|".join(pong_parts)
 
-            # Handle "status" command - respond with online status and Sydney node count
-            if 'status' in words and 'stats' not in words:
+            # Handle "help" command - show available commands
+            if 'help' in words:
+                return "Commands: test,ping,path,status,stats,help | Or ask me about MeshCore"
+
+            # Handle "stats" or "status" command - show node counts (stats is alias for status)
+            if 'stats' in words or 'status' in words:
                 try:
+                    # Record command execution
+                    cmd_name = 'stats' if 'stats' in words else 'status'
+                    self.stats.record_command(sender_id, cmd_name, message.get('channel', 'unknown'), False)
+
+                    # Get node counts
                     sydney_nodes = self.api.get_sydney_nodes()
                     nsw_nodes = self.api.get_nsw_nodes()
-
-                    # Filter to nodes seen in last 7 days
                     sydney_active = self._filter_nodes_by_days(sydney_nodes, days=7)
                     nsw_active = self._filter_nodes_by_days(nsw_nodes, days=7)
-
-                    # Count companions (type 1) vs repeaters (type 2)
                     sydney_companions = len([n for n in sydney_active if n.get('type') == 1])
                     sydney_repeaters = len([n for n in sydney_active if n.get('type') == 2])
                     nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
                     nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
-
-                    # Record command execution
-                    self.stats.record_command(sender_id, 'status', message.get('channel', 'unknown'), False)
 
                     return f"Online | Sydney {sydney_companions} companions / {sydney_repeaters} repeaters | NSW {nsw_companions} companions / {nsw_repeaters} repeaters (7d)"
                 except Exception as e:
                     logger.error(f"Error getting node counts: {e}")
                     return "Online|nodes unavailable"
-
-            # Handle "help" command - show available commands
-            if 'help' in words:
-                return "Commands: test,ping,path,status,stats,help | Or ask me about MeshCore"
-
-            # Handle "stats" command - show 24h bot analytics + node counts
-            if 'stats' in words and 'status' not in words:
-                try:
-                    # Record command execution
-                    self.stats.record_command(sender_id, 'stats', message.get('channel', 'unknown'), False)
-
-                    # Get bot activity stats
-                    stats_data = self.stats.get_stats_24h()
-
-                    # Get node counts (same as status command)
-                    sydney_nodes = self.api.get_sydney_nodes()
-                    nsw_nodes = self.api.get_nsw_nodes()
-                    sydney_active = self._filter_nodes_by_days(sydney_nodes, days=7)
-                    nsw_active = self._filter_nodes_by_days(nsw_nodes, days=7)
-                    sydney_companions = len([n for n in sydney_active if n.get('type') == 1])
-                    sydney_repeaters = len([n for n in sydney_active if n.get('type') == 2])
-                    nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
-                    nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
-
-                    return f"Stats(24h): {stats_data['messages']}msgs | {stats_data['commands']}cmds | Top:{stats_data['top_command']} | User:{stats_data['top_user']} | NSW {nsw_companions}/{nsw_repeaters} | Syd {sydney_companions}/{sydney_repeaters}"
-                except Exception as e:
-                    logger.error(f"Error getting stats: {e}")
-                    return "Stats unavailable"
 
             # Handle "path" command - respond with compact path including suburbs
             if 'path' in words:
