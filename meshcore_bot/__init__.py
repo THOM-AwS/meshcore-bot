@@ -283,6 +283,10 @@ class MeshCoreBot:
         self.recent_rf_data = []
         self.rf_data_timeout = 5.0  # 5 second window for correlation
 
+        # Initialize stats tracker
+        from .features import StatsTracker
+        self.stats = StatsTracker()
+
         # Initialize AWS Bedrock client
         self.bedrock = self._init_bedrock_client()
 
@@ -1252,6 +1256,9 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 # Add timestamp
                 ack_parts.append(f"Received at: {now}")
 
+                # Record command execution
+                self.stats.record_command(sender_id, 'test', message.get('channel', 'unknown'), False)
+
                 return " | ".join(ack_parts)
 
             # Handle "ping" command - respond with pong and signal data
@@ -1268,10 +1275,13 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     pong_parts.append(f"RSSI:{rssi}dBm")
                 pong_parts.append(now)
 
+                # Record command execution
+                self.stats.record_command(sender_id, 'ping', message.get('channel', 'unknown'), False)
+
                 return "|".join(pong_parts)
 
             # Handle "status" command - respond with online status and Sydney node count
-            if 'status' in words:
+            if 'status' in words and 'stats' not in words:
                 try:
                     sydney_nodes = self.api.get_sydney_nodes()
                     nsw_nodes = self.api.get_nsw_nodes()
@@ -1286,6 +1296,9 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
                     nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
 
+                    # Record command execution
+                    self.stats.record_command(sender_id, 'status', message.get('channel', 'unknown'), False)
+
                     return f"Online | Sydney {sydney_companions} companions / {sydney_repeaters} repeaters | NSW {nsw_companions} companions / {nsw_repeaters} repeaters (7d)"
                 except Exception as e:
                     logger.error(f"Error getting node counts: {e}")
@@ -1293,10 +1306,37 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             # Handle "help" command - show available commands
             if 'help' in words:
-                return "Commands: test,ping,path,status,nodes,route,trace,help | Or ask me about MeshCore"
+                return "Commands: test,ping,path,status,stats,help | Or ask me about MeshCore"
+
+            # Handle "stats" command - show 24h bot analytics + node counts
+            if 'stats' in words and 'status' not in words:
+                try:
+                    # Record command execution
+                    self.stats.record_command(sender_id, 'stats', message.get('channel', 'unknown'), False)
+
+                    # Get bot activity stats
+                    stats_data = self.stats.get_stats_24h()
+
+                    # Get node counts (same as status command)
+                    sydney_nodes = self.api.get_sydney_nodes()
+                    nsw_nodes = self.api.get_nsw_nodes()
+                    sydney_active = self._filter_nodes_by_days(sydney_nodes, days=7)
+                    nsw_active = self._filter_nodes_by_days(nsw_nodes, days=7)
+                    sydney_companions = len([n for n in sydney_active if n.get('type') == 1])
+                    sydney_repeaters = len([n for n in sydney_active if n.get('type') == 2])
+                    nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
+                    nsw_repeaters = len([n for n in nsw_active if n.get('type') == 2])
+
+                    return f"Stats(24h): {stats_data['messages']}msgs | {stats_data['commands']}cmds | Top:{stats_data['top_command']} | User:{stats_data['top_user']} | NSW {nsw_companions}/{nsw_repeaters} | Syd {sydney_companions}/{sydney_repeaters}"
+                except Exception as e:
+                    logger.error(f"Error getting stats: {e}")
+                    return "Stats unavailable"
 
             # Handle "path" command - respond with compact path including suburbs
             if 'path' in words:
+                # Record command execution
+                self.stats.record_command(sender_id, 'path', message.get('channel', 'unknown'), False)
+
                 compact_path = await self._get_compact_path(message, sender_id)
                 return compact_path
 
@@ -1846,6 +1886,23 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             # Single concise log line for received messages
             logger.debug(f"📬 {channel_name} | {from_name} | SNR:{snr} | RSSI:{rssi} | hops:{path_len}")
+
+            # Look up path from recent RF data
+            import time
+            path_str = None
+            current_time = time.time()
+            for rf_data in reversed(self.recent_rf_data):
+                time_diff = current_time - rf_data['timestamp']
+                if time_diff < self.rf_data_timeout and rf_data.get('path_length') == path_len:
+                    path_nodes = rf_data.get('path_nodes', [])
+                    if path_nodes:
+                        path_str = ','.join(path_nodes)
+                        break
+
+            # Record message stats (before bot filtering so we track all activity)
+            self.stats.record_message(from_name, channel_name, False, path_len, snr, rssi, path_str)
+            if path_str and len(path_str.split(',')) >= 3:
+                self.stats.record_path(from_name, channel_name, len(path_str.split(',')), path_str)
 
             # Don't respond to messages from other bots (but still log them above)
             # Pattern: starts with "ack " or contains hex prefix patterns like "32:", "05:", "f5:"
