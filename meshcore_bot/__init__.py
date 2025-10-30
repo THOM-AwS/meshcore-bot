@@ -279,6 +279,10 @@ class MeshCoreBot:
         # Initialize MeshCore API client
         self.api = MeshCoreAPI()
 
+        # Initialize RF data tracking for path extraction
+        self.recent_rf_data = []
+        self.rf_data_timeout = 5.0  # 5 second window for correlation
+
         # Initialize AWS Bedrock client
         self.bedrock = self._init_bedrock_client()
 
@@ -535,64 +539,26 @@ class MeshCoreBot:
         Returns format like: "43,36,49,f5" or "Direct" or "3hops"
         """
         try:
+            import time
             sender_prefix = message.get('pubkey_prefix', '')
             path_len_msg = message.get('path_len', 0)
 
-            # Direct connection (path_len = 255)
+            # Direct connection (path_len = 255 or 0)
             if path_len_msg == 255 or path_len_msg == 0:
                 return "Direct"
 
-            # Get all contacts
-            contacts_result = await self.meshcore.commands.get_contacts()
-            if contacts_result.type != EventType.CONTACTS:
-                return f"{path_len_msg}hops"
+            # Look for recent RF data with path information
+            current_time = time.time()
+            for rf_data in reversed(self.recent_rf_data):  # Check most recent first
+                # Match by timestamp proximity (within 5 seconds) and path length
+                time_diff = current_time - rf_data['timestamp']
+                if time_diff < self.rf_data_timeout and rf_data.get('path_length') == path_len_msg:
+                    path_nodes = rf_data.get('path_nodes', [])
+                    if path_nodes:
+                        return ",".join(path_nodes)
 
-            contacts = contacts_result.payload
-
-            # Find sender contact
-            sender_contact = None
-            sender_pubkey = message.get('sender_pubkey', '')
-
-            for key, contact in contacts.items():
-                contact_pubkey = contact.get('public_key', '')
-                # Match by pubkey prefix (first 12 hex chars = 6 bytes)
-                if contact_pubkey[:12] == sender_prefix:
-                    sender_contact = contact
-                    break
-                # Also try matching full pubkey if available
-                if sender_pubkey and contact_pubkey == sender_pubkey:
-                    sender_contact = contact
-                    break
-
-            if not sender_contact:
-                return f"{path_len_msg}hops"
-
-            # Get path from contact
-            out_path = sender_contact.get('out_path', b'')
-            out_path_len = sender_contact.get('out_path_len', -1)
-
-            if out_path_len <= 0:
-                return f"{path_len_msg}hops"
-
-            # Build path string as hex bytes (like Father ROLO)
-            path_hops = []
-            # Determine bytes per hop: if we have enough data for 8 bytes per hop, use 8, else 6
-            bytes_per_hop = 8 if len(out_path) >= out_path_len * 8 else 6
-
-            for i in range(out_path_len):
-                start = i * bytes_per_hop
-                end = start + bytes_per_hop
-                if end > len(out_path):
-                    break
-
-                node_hash = out_path[start:end]
-                hash_hex = node_hash.hex()[:2]  # First 2 hex chars (1 byte)
-                path_hops.append(hash_hex)
-
-            if path_hops:
-                return ",".join(path_hops)
-            else:
-                return f"{path_len_msg}hops"
+            # Fallback: return hop count if no RF data found
+            return f"{path_len_msg}hops"
 
         except Exception as e:
             logger.error(f"Error getting path for test: {e}", exc_info=True)
@@ -1994,18 +1960,51 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 logger.info(f"🔍 Trace data: {event}")
 
             async def on_rx_log_data(event):
-                """Capture RSSI and SNR from RX log data."""
+                """Capture RSSI, SNR, and path data from RX log data."""
                 try:
                     if hasattr(event, 'payload'):
                         payload = event.payload
+                        import time
 
                         # Extract SNR and RSSI
                         snr = payload.get('snr', payload.get('SNR'))
                         rssi = payload.get('rssi', payload.get('RSSI'))
 
-                        # Store SNR/RSSI for test/ping commands (don't log every packet)
+                        # Store SNR/RSSI for test/ping commands
                         self.last_rx_snr = snr
                         self.last_rx_rssi = rssi
+
+                        # Extract and decode packet data for path information
+                        raw_hex = payload.get('raw_hex', '')
+                        payload_hex = payload.get('payload', '')
+
+                        if raw_hex:
+                            # Decode packet to extract routing info
+                            from .features import PacketDecoder
+                            decoder = PacketDecoder()
+                            decoded = decoder.decode_meshcore_packet(raw_hex, payload_hex)
+
+                            logger.info(f"RX_LOG: decoded={bool(decoded)}, path_nodes={decoded.get('path_nodes') if decoded else None}")
+
+                            if decoded and decoded.get('path_nodes'):
+                                # Store RF data for correlation with messages
+                                pubkey_prefix = raw_hex[:12] if len(raw_hex) >= 12 else ''
+                                rf_data = {
+                                    'timestamp': time.time(),
+                                    'pubkey_prefix': pubkey_prefix,
+                                    'snr': snr,
+                                    'rssi': rssi,
+                                    'path_nodes': decoded['path_nodes'],
+                                    'path_length': len(decoded['path_nodes']),
+                                    'route_type': decoded.get('route_type_name', 'Unknown')
+                                }
+                                self.recent_rf_data.append(rf_data)
+                                logger.info(f"📡 Stored path: {','.join(decoded['path_nodes'])} ({len(decoded['path_nodes'])} hops)")
+
+                                # Clean up old RF data (keep only last 5 seconds)
+                                current_time = time.time()
+                                self.recent_rf_data = [d for d in self.recent_rf_data
+                                                      if current_time - d['timestamp'] < self.rf_data_timeout]
                 except Exception as e:
                     logger.error(f"Error in on_rx_log_data: {e}", exc_info=True)
 
