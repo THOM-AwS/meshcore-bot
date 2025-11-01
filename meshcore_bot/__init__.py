@@ -1297,11 +1297,57 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     cmd_name = 'stats' if 'stats' in words else 'status'
                     self.stats.record_command(sender_id, cmd_name, message.get('channel', 'unknown'), False)
 
-                    # Get node counts
+                    # Get device contacts
+                    device_contacts = {}
+                    try:
+                        contacts_result = await self.meshcore.commands.get_contacts()
+                        if contacts_result.type == EventType.CONTACTS:
+                            device_contacts = contacts_result.payload
+                    except Exception as e:
+                        logger.warning(f"Could not get device contacts for status: {e}")
+
+                    # Get API nodes
                     sydney_nodes = self.api.get_sydney_nodes()
                     nsw_nodes = self.api.get_nsw_nodes()
-                    sydney_active = self._filter_nodes_by_days(sydney_nodes, days=7)
-                    nsw_active = self._filter_nodes_by_days(nsw_nodes, days=7)
+
+                    # Combine API nodes with device contacts by public key
+                    combined_nodes = {}
+
+                    # Add API nodes first
+                    for node in sydney_nodes + nsw_nodes:
+                        pubkey = node.get('public_key')
+                        if pubkey:
+                            combined_nodes[pubkey] = node
+
+                    # Add/update with device contact data
+                    for contact_key, contact in device_contacts.items():
+                        pubkey = contact.get('public_key', '')
+                        if not pubkey:
+                            continue
+
+                        # If already in combined_nodes from API, merge the data
+                        if pubkey in combined_nodes:
+                            # API data takes precedence for location/type, but update last_advert if contact is newer
+                            contact_advert = contact.get('last_advert')
+                            api_advert = combined_nodes[pubkey].get('last_advert')
+                            # Ensure both are same type for comparison
+                            try:
+                                contact_advert_int = int(contact_advert) if contact_advert else None
+                                api_advert_int = int(api_advert) if api_advert else None
+                                if contact_advert_int and (not api_advert_int or contact_advert_int > api_advert_int):
+                                    combined_nodes[pubkey]['last_advert'] = contact_advert_int
+                            except (ValueError, TypeError):
+                                if contact_advert:
+                                    combined_nodes[pubkey]['last_advert'] = contact_advert
+
+                    # Convert back to list
+                    all_nodes = list(combined_nodes.values())
+
+                    # Filter to nodes seen in last 7 days
+                    sydney_active = self._filter_nodes_by_days([n for n in all_nodes if self.api._is_sydney_node(n)], days=7)
+                    nsw_active = self._filter_nodes_by_days([n for n in all_nodes if self.api._is_nsw_node(n)], days=7)
+
+                    # Count companions (type 1) vs repeaters (type 2)
                     sydney_companions = len([n for n in sydney_active if n.get('type') == 1])
                     sydney_repeaters = len([n for n in sydney_active if n.get('type') == 2])
                     nsw_companions = len([n for n in nsw_active if n.get('type') == 1])
