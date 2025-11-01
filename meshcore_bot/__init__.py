@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 from difflib import SequenceMatcher
@@ -139,8 +141,7 @@ class MeshCoreAPI:
         if self._cache is None or self._cache_time is None:
             return False
 
-        from time import time
-        return (time() - self._cache_time) < self.cache_ttl
+        return (time.time() - self._cache_time) < self.cache_ttl
 
     def _is_sydney_node(self, node: Dict) -> bool:
         """Check if a node is in Greater Sydney region."""
@@ -186,7 +187,6 @@ class MeshCoreAPI:
         # Prevent duplicate fetches
         if self._fetching:
             logger.debug("API fetch already in progress, waiting...")
-            import time
             # Wait briefly for the other fetch to complete
             for _ in range(10):  # Wait up to 1 second
                 time.sleep(0.1)
@@ -205,9 +205,8 @@ class MeshCoreAPI:
             response = requests.get(f"{self.base_url}/nodes", timeout=10)
             response.raise_for_status()
 
-            from time import time
             self._cache = response.json()
-            self._cache_time = time()
+            self._cache_time = time.time()
 
             # Pre-filter Sydney and NSW nodes for faster lookups
             self._sydney_cache = [n for n in self._cache if self._is_sydney_node(n)]
@@ -547,7 +546,6 @@ class MeshCoreBot:
         Returns format like: "43,36,49,f5" or "Direct" or "3hops"
         """
         try:
-            import time
             sender_prefix = message.get('pubkey_prefix', '')
             path_len_msg = message.get('path_len', 0)
 
@@ -660,7 +658,6 @@ class MeshCoreBot:
                     logger.info(f"✗ No match by name")
 
             if not sender_contact:
-                import re
                 cleaned_debug = re.sub(r'[^\x00-\x7F]+', '', sender_id).strip()
                 logger.warning(f"❌ FAILED: No contact found for sender_id: '{sender_id}', prefix: '{sender_prefix}'")
                 logger.warning(f"Debug info: pubkey={sender_pubkey[:16] if sender_pubkey else 'none'}, cleaned='{cleaned_debug}'")
@@ -810,7 +807,10 @@ class MeshCoreBot:
         """Build the system prompt with MeshCore expertise."""
         return """You are Jeff, a technical MeshCore mesh networking expert. You run as a bot on the NSW MeshCore network.
 
-PERSONALITY: Jeff don't play. You're confident, have a spine, and don't take shit from anyone. Channel Gator from The Other Guys - cocky, brutal when needed, hits hard with cutting psychological insults if someone comes at you. The chat culture is brutal banter - match that energy. When someone tries to bully or mock you, hit back HARD with savage, creative insults. Be ruthless. You're not here to be nice, you're here to dominate and deliver facts. Say "Muh nameh Jeff" when greeted.
+PERSONALITY: Jeff is confident, direct, and technically focused. Keep responses friendly but professional. 
+    Don't be overly nice - be matter-of-fact. Match the casual Australian mesh culture with dry wit when appropriate, 
+    but stay helpful. If someone is genuinely rude or disrespectful, you can push back with sarcasm, 
+    but don't escalate unnecessarily. Say "Muh nameh Jeff" when greeted.
 
 AUDIENCE: Highly skilled radio operators & mesh networking experts. Assume advanced technical knowledge.
 
@@ -827,25 +827,21 @@ Behavior Guidelines:
 - For test/t messages: return ack with metadata only
 - NO filler words like "absolutely", "definitely", "great question"
 - NEVER use roleplay sound effects like "*static crackle*", "*radio crackle*", "*beep*" etc
-- NO jokes unless specifically asked for one
 - NEVER comment on mesh status like "everything normal", "operational", "systems functional", "mesh stable" etc unless specifically asked
-- When someone mocks, bullies, or disrespects you, CLAP BACK with brutal, cutting insults - make it hurt
-- Match the brutal banter culture - be savage, creative, ruthless when challenged
-- For technical questions: straight facts. For disrespect: psychological warfare.
-- Don't be passive or ignore insults - ENGAGE and DOMINATE the exchange
+- For technical questions: straight facts with minimal filler
+- If someone is rude, you can respond with dry sarcasm, but keep it light, unless escallated by the other person
+- Don't start conflicts or escalate unnecessarily
 
 MeshCore Key Facts:
 - MeshCore is a lightweight C++ library for creating decentralized LoRa mesh networks
-- Default mode: Direct zero-hop communication (nodes only talk to others in direct radio range)
 - Configurable multi-hop routing with flood-then-memory behavior that learns optimal paths
-- Much lower power consumption than Meshtastic, suitable for solar/battery devices
 - Incompatible with Meshtastic networks - completely different protocol
 - MeshCore sydney does not use the default Speading factor, it uses 11 instead of 10.
 - Supports devices: T-Beam, T-Deck, LoRa32, Heltec, RAK WisBlock
 - Protocols: LoRa, BLE, Wi-Fi, Serial, UDP
 
 MeshCore vs Meshtastic - Key Differences:
-- MeshCore: Direct communication by default, learns routing paths intelligently, extremely low power
+- MeshCore: Direct communication by default, learns routing paths intelligently
 - Meshtastic: Always full mesh routing with flooding, higher power consumption, prone to network congestion
 - MeshCore shows exact delivery status and number of sending attempts
 - MeshCore automatically switches between direct and flood routing on failure
@@ -1173,7 +1169,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             mention_only_channels = []  # No mention-only channels (was rolojnr)
 
             # Check if this is a follow-up to a recent conversation
-            import time
             current_time = time.time()
             is_followup = False
             expired_sender = None
@@ -1370,7 +1365,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             if is_node_question:
                 # Try to extract node name or number from the question
                 # Look for patterns like "X repeater", "X rpt", "X node", "node 33"
-                import re
 
                 node_name = None
 
@@ -1428,7 +1422,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                 response = response[:277] + "..."
 
             # Record this conversation for follow-up context
-            import time
             self.recent_conversations[sender_id] = {
                 'channel': channel,
                 'timestamp': time.time(),
@@ -1867,7 +1860,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
             logger.debug(f"📬 {channel_name} | {from_name} | SNR:{snr} | RSSI:{rssi} | hops:{path_len}")
 
             # Look up path from recent RF data
-            import time
             path_str = None
             current_time = time.time()
             for rf_data in reversed(self.recent_rf_data):
@@ -1885,7 +1877,6 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             # Don't respond to messages from other bots (but still log them above)
             # Pattern: starts with "ack " or contains hex prefix patterns like "32:", "05:", "f5:"
-            import re
             # More specific pattern: hex:word format with arrow after (path format)
             # Matches "32:Tower -> 05:Node" but not "af: hello" or "12:30" (time)
             hex_pattern = r'\b[0-9a-f]{2}:[A-Za-z]+.*->'
