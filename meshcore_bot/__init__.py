@@ -1310,14 +1310,14 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
                     logger.error(f"Error getting node counts: {e}")
                     return "Online|nodes unavailable"
 
-            # Handle "path" command - respond with hex path (same as test command)
+            # Handle "path" command - respond with detailed path including names, suburbs, distances
             if 'path' in words:
                 # Record command execution
                 self.stats.record_command(sender_id, 'path', message.get('channel', 'unknown'), False)
 
-                # Get path from recent RF data (same as test command)
-                path_str = await self._get_path_for_test(message, sender_id)
-                return path_str
+                # Get detailed path with node names and locations
+                compact_path = await self._get_compact_path(message, sender_id)
+                return compact_path
 
             # Build context with message metadata for Claude to use
             context_parts = []
