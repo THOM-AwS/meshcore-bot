@@ -1275,7 +1275,20 @@ Use Australian/NZ spelling and casual but technical tone with confidence. ALWAYS
 
             # Handle "help" command - show available commands
             if 'help' in words:
-                return "Commands: test,ping,path,status,stats,help | Or ask me about MeshCore"
+                return "Commands: test,ping,path,status,advert,help | Or ask me about MeshCore"
+
+            # Handle "advert" command - send advertisement message
+            if 'advert' in words or 'advertise' in words:
+                try:
+                    # Record command execution
+                    self.stats.record_command(sender_id, 'advert', message.get('channel', 'unknown'), False)
+
+                    # Send advert via MeshCore
+                    await self.meshcore.commands.send_advert()
+                    return "Advert sent"
+                except Exception as e:
+                    logger.error(f"Error sending advert: {e}")
+                    return "Advert failed"
 
             # Handle "stats" or "status" command - show node counts (stats is alias for status)
             if 'stats' in words or 'status' in words:
