@@ -676,16 +676,19 @@ class MeshCoreBot:
             if path_len_msg == 255 or path_len_msg == 0:
                 return f"{sender_part} -> {self.bot_name}"
 
-            # Get path from contact
-            out_path = sender_contact.get('out_path', b'')
-            out_path_len = sender_contact.get('out_path_len', -1)
+            # Get path from recent RF data instead of contact out_path (which is not populated)
+            current_time = time.time()
+            path_nodes = None
+            for rf_data in reversed(self.recent_rf_data):
+                time_diff = current_time - rf_data['timestamp']
+                if time_diff < self.rf_data_timeout and rf_data.get('path_length') == path_len_msg:
+                    path_nodes = rf_data.get('path_nodes', [])
+                    if path_nodes:
+                        logger.info(f"Found path from RF data: {','.join(path_nodes)} ({len(path_nodes)} hops)")
+                        break
 
-            logger.info(f"Path data: out_path_len={out_path_len}, out_path bytes={len(out_path)}, path_len_msg={path_len_msg}")
-            if out_path:
-                logger.info(f"Path data hex: {out_path.hex()[:64]}...")  # First 64 chars of hex
-
-            if out_path_len <= 0:
-                logger.info(f"Direct path (out_path_len={out_path_len})")
+            if not path_nodes:
+                logger.info(f"No RF data found for path_len={path_len_msg}, showing direct path")
                 return f"{sender_part} -> {self.bot_name}"
 
             # Build path string with distances
@@ -698,30 +701,21 @@ class MeshCoreBot:
             path_parts.append(sender_part)
             prev_lat, prev_lon = sender_lat, sender_lon
 
-            # Parse intermediate nodes (8 bytes per hop for full hash, 6 for short)
-            # Determine bytes per hop: if we have enough data for 8 bytes per hop, use 8, else 6
-            bytes_per_hop = 8 if len(out_path) >= out_path_len * 8 else 6
-
-            for i in range(out_path_len):
-                start = i * bytes_per_hop
-                end = start + bytes_per_hop
-                if end > len(out_path):
-                    break
-
-                node_hash = out_path[start:end]
-                node_name = await self._get_node_name_from_hash(node_hash, contacts)
-                hash_prefix = node_hash.hex()[:2]
-
-                # Find full pubkey for this hop to lookup suburb and location
+            # Process each hop from RF data
+            for hop_hex in path_nodes:
+                # Find contact matching this hop (hex is 2-char prefix of pubkey)
                 hop_pubkey = None
+                hop_name = f"Node-{hop_hex}"
+
                 for key, contact in contacts.items():
                     contact_pubkey = contact.get('public_key', '')
-                    if contact_pubkey.startswith(node_hash.hex()):
+                    if contact_pubkey.startswith(hop_hex):
                         hop_pubkey = contact_pubkey
+                        hop_name = contact.get('adv_name', hop_name)
                         break
 
                 suburb = self._get_node_suburb(hop_pubkey, all_nodes) if hop_pubkey else ""
-                node_part = f"{hash_prefix}:{node_name} {suburb}".strip()
+                node_part = f"{hop_hex}:{hop_name} {suburb}".strip()
 
                 # Calculate distance from previous hop
                 if hop_pubkey and prev_lat is not None and prev_lon is not None:
